@@ -1,7 +1,7 @@
 # Cardia: Hybrid-AI Wellness & Health Platform
 
 <div align="center">
-  <img src="./mobile-app/assets/images/cardia_heart.png" alt="Cardia Logo" width="120" />
+  <img src="./mobile-app/assets/images/cardia_logo_readme.png" alt="Cardia Logo" width="120" style="border-radius: 32px;" />
   <br/>
   <p><b>Zero-Effort. Privacy-First. Edge-Compute Intelligence.</b></p>
   
@@ -19,7 +19,7 @@
 
 ---
 
-## ✨ Core Architectures & Features
+## Core Architectures & Features
 
 ### 1. Melio: Zero-Trust On-Device SLM
 Mental health data is highly sensitive. Melio is an empathetic AI chatbot that runs **100% offline** on the user's device.
