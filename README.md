@@ -86,7 +86,9 @@ pip install -r requirements.txt
 
 # Setup Environment Variables
 # Create a .env file in the backend root and add:
-GEMINI_API_KEY=your_api_key_here
+GEMINI_API_KEY=your_google_gemini_key_here
+GROQ_API_KEY=your_groq_api_key_here
+DATABASE_URL=postgresql://postgres:yourpassword@localhost:5432/your_db_name
 ```
 
 **Start the Backend Services (Requires 2 Terminals):**
@@ -108,7 +110,7 @@ Open a new terminal in the `/mobile-app` directory.
 npm install
 
 # Start the Expo development server
-npx expo start -c
+npx expo run:android
 ```
 
 > **⚠️ Critical Note on IP Addresses:** \> If testing on a physical device, ensure the `IP_ADDRESS` variable in your frontend `.tsx` files (e.g., `FoodScanner.tsx`, `auth.tsx`) matches your computer's local Wi-Fi IPv4 address.
