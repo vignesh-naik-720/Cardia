@@ -1,0 +1,18 @@
+# Node & Expo (Frontend)
+node_modules/
+.expo/
+npm-debug.log
+
+# Python (Backend)
+venv/
+env/
+__pycache__/
+*.pyc
+
+# Environment Variables (API Keys)
+.env
+
+# Heavy AI Models & Temp Files
+*.gguf
+temp_*.mp4
+temp_*.jpg
