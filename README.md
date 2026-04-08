@@ -1,7 +1,7 @@
 # Cardia: Hybrid-AI Wellness & Health Platform
 
 <div align="center">
-  <img src="./mobile-app/assets/images/cardia_logo_readme.png" alt="Cardia Logo" width="500" />
+  <img src="./mobile-app/assets/images/cardia_logo_readme.png" alt="Cardia Logo" width="240" />
   <br/>
   <p><b>Zero-Effort. Privacy-First. Edge-Compute Intelligence.</b></p>
   
