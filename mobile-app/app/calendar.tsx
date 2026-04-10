@@ -7,7 +7,32 @@ import { useFonts, Ubuntu_400Regular, Ubuntu_500Medium } from '@expo-google-font
 import { SourceSerifPro_700Bold } from '@expo-google-fonts/source-serif-pro';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 
-const IP_ADDRESS = "10.179.25.130"
+const IP_ADDRESS = "192.168.1.3"
+
+// 🚀 NEW: Helper function to format the date string beautifully
+const formatBeautifulDate = (dateString: string) => {
+    if (!dateString) return "";
+    
+    // Split the raw string to avoid timezone shifting issues that happen with new Date(dateString)
+    const [yearStr, monthStr, dayStr] = dateString.split('-');
+    const year = parseInt(yearStr, 10);
+    const monthIndex = parseInt(monthStr, 10) - 1;
+    const day = parseInt(dayStr, 10);
+
+    const months = [
+        "January", "February", "March", "April", "May", "June",
+        "July", "August", "September", "October", "November", "December"
+    ];
+
+    // Determine the correct ordinal suffix (st, nd, rd, th)
+    const getOrdinalSuffix = (n: number) => {
+        const s = ["th", "st", "nd", "rd"];
+        const v = n % 100;
+        return s[(v - 20) % 10] || s[v] || s[0];
+    };
+
+    return `${day}${getOrdinalSuffix(day)} ${months[monthIndex]}, ${year}`;
+};
 
 export default function CalendarScreen() {
   const router = useRouter();
@@ -144,7 +169,8 @@ export default function CalendarScreen() {
 
         {selectedDateData && (
             <Animated.View style={styles.contextBox}>
-                <Text style={styles.contextDate}>{selectedDateData.date}</Text>
+                {/* 🚀 FIXED: Passed the raw date string through our new formatter */}
+                <Text style={styles.contextDate}>{formatBeautifulDate(selectedDateData.date)}</Text>
                 
                 {selectedDateData.empty ? (
                     <Text style={[styles.contextText, {color: '#8A6D72', fontStyle: 'italic'}]}>No scan data recorded for this day.</Text>

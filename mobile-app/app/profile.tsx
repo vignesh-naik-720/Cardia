@@ -7,7 +7,7 @@ import { Ionicons } from '@expo/vector-icons';
 import { useFonts, Ubuntu_400Regular, Ubuntu_500Medium } from '@expo-google-fonts/ubuntu';
 import { SourceSerifPro_700Bold } from '@expo-google-fonts/source-serif-pro';
 
-const IP_ADDRESS = "10.179.25.130";
+const IP_ADDRESS = "192.168.1.3";
 
 const Pill = ({ label, isSelected, onPress, disabled }: { label: string, isSelected: boolean, onPress: () => void, disabled: boolean }) => (
   <TouchableOpacity 

@@ -4,15 +4,15 @@ import { Camera, useCameraDevice, useCameraPermission } from 'react-native-visio
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import { useRouter } from 'expo-router';
 import { Ionicons } from '@expo/vector-icons';
-import { useFonts, Ubuntu_400Regular, Ubuntu_500Medium } from '@expo-google-fonts/ubuntu';
+import { useFonts, Ubuntu_400Regular, Ubuntu_500Medium, Ubuntu_400Regular_Italic } from '@expo-google-fonts/ubuntu';
 import { SourceSerifPro_700Bold } from '@expo-google-fonts/source-serif-pro';
 import { LineChart } from 'react-native-chart-kit';
+import * as ImagePicker from 'expo-image-picker';
 
-// Import our cleanly separated components
 import FoodScanner from '../../components/FoodScanner';
 import MelioChat from '../../components/MelioChat';
 
-type ChatMessage = { role: 'user' | 'agent', text: string, suggest_local?: boolean };
+type ChatMessage = { id: string, role: 'user' | 'agent' | 'system', text: string, suggest_local?: boolean, isNew?: boolean, imageUri?: string };
 
 const FUN_FACTS = [
   "Scan in progress... keep your finger steady over the lens.",
@@ -23,7 +23,46 @@ const FUN_FACTS = [
 ];
 
 const screenWidth = Dimensions.get("window").width;
-const IP_ADDRESS = "10.179.25.130"
+const IP_ADDRESS = "192.168.1.3";
+
+// 🚀 NEW: Helper function to parse **bold** Markdown into React Native styles
+const formatMessageText = (text: string) => {
+    if (!text) return null;
+    const parts = text.split(/(\*\*.*?\*\*)/g);
+    
+    return parts.map((part, i) => {
+        if (part.startsWith('**') && part.endsWith('**')) {
+            return (
+                <Text key={i} style={{ fontFamily: 'Ubuntu_500Medium' }}>
+                    {part.replace(/\*\*/g, '')}
+                </Text>
+            );
+        }
+        return <Text key={i}>{part}</Text>;
+    });
+};
+
+const TypewriterText = ({ text, isNew }: { text: string, isNew?: boolean }) => {
+    const safeText = text || "An error occurred. Please try again.";
+    const [displayedText, setDisplayedText] = useState(isNew ? "" : safeText);
+    
+    useEffect(() => {
+        if (!isNew) return;
+        let i = 0;
+        const timer = setInterval(() => {
+            setDisplayedText(safeText.slice(0, i + 1));
+            i++;
+            if (i >= safeText.length) clearInterval(timer);
+        }, 15);
+        return () => clearInterval(timer);
+    }, [safeText, isNew]);
+
+    return (
+        <Text style={{color: '#5C4E50', fontFamily: 'Ubuntu_400Regular', fontSize: 16, lineHeight: 24}}>
+            {formatMessageText(displayedText)}
+        </Text>
+    );
+};
 
 export default function App() {
   const router = useRouter();
@@ -33,6 +72,7 @@ export default function App() {
   let [fontsLoaded] = useFonts({
     Ubuntu_400Regular,
     Ubuntu_500Medium,
+    Ubuntu_400Regular_Italic,
     SourceSerifPro_700Bold,
   });
 
@@ -47,15 +87,16 @@ export default function App() {
   const [isCalibrating, setIsCalibrating] = useState(false);
   const [isRecording, setIsRecording] = useState(false);
   const [timeLeft, setTimeLeft] = useState(30);
-  const [isProcessing, setIsProcessing] = useState(false);
   const [biometrics, setBiometrics] = useState<any>(null);
   const [scanError, setScanError] = useState<string | null>(null);
   
   const [chatHistory, setChatHistory] = useState<ChatMessage[]>([]);
   const [inputText, setInputText] = useState("");
-  const [isAgentTyping, setIsAgentTyping] = useState(false);
+  
+  const [isAnytimeMode, setIsAnytimeMode] = useState(false);
 
-  // 🚀 NEW: Metric Selection State
+  const [selectedImage, setSelectedImage] = useState<{ uri: string, base64: string } | null>(null);
+
   const [timeframe, setTimeframe] = useState<'7_days' | 'month'>('7_days');
   const [selectedMetric, setSelectedMetric] = useState<'Energy' | 'Stress' | 'Focus' | 'Health'>('Energy');
   const [showMetricMenu, setShowMetricMenu] = useState(false);
@@ -89,7 +130,6 @@ export default function App() {
       try {
         const token = await AsyncStorage.getItem('userToken');
         if (token) {
-          // 🚀 UPDATED API CALL: Passing the selected metric to backend
           const response = await fetch(`http://${IP_ADDRESS}:8000/api/trends?timeframe=${timeframe}&metric=${selectedMetric.toLowerCase()}`, {
             headers: { 'Authorization': `Bearer ${token}` }
           });
@@ -121,11 +161,11 @@ export default function App() {
       }
     };
     if (currentScreen === 'home') fetchTrends();
-  }, [timeframe, selectedMetric, currentScreen]); // Trigger refetch when metric changes
+  }, [timeframe, selectedMetric, currentScreen]);
 
   useEffect(() => {
     if (chatHistory.length > 0) setTimeout(() => chatScrollRef.current?.scrollToEnd({ animated: true }), 100);
-  }, [chatHistory, isAgentTyping]);
+  }, [chatHistory]);
 
   const getGreeting = () => {
     const hours = new Date().getHours();
@@ -134,7 +174,6 @@ export default function App() {
     return 'Good evening';
   };
 
-  // 🚀 NEW: Dynamic subtitle based on metric
   const getGraphSubtitle = () => {
       switch(selectedMetric) {
           case 'Energy': return "Your blended readiness score based on HRV and Resting Heart Rate.";
@@ -163,6 +202,8 @@ export default function App() {
       setTimeLeft(30);
       setFunFactIndex(0);
       
+      if (timerRef.current) clearInterval(timerRef.current);
+      
       timerRef.current = setInterval(() => {
         setTimeLeft(prev => {
           if (prev <= 1) { 
@@ -179,81 +220,204 @@ export default function App() {
         onRecordingFinished: (video) => uploadVideo(`file://${video.path}`),
         onRecordingError: (error) => { setIsRecording(false); if (timerRef.current) clearInterval(timerRef.current); }
       });
-      setTimeout(() => { if (isRecording) cameraRef.current?.stopRecording(); }, 30000);
     }
   };
 
   const uploadVideo = async (uri: string) => {
-    setIsProcessing(true); setIsRecording(false); setIsCalibrating(false); setIsCameraReady(false); 
+    setIsRecording(false); setIsCalibrating(false); setIsCameraReady(false); 
+    
+    setIsAnytimeMode(false); 
+    setCurrentScreen('cloud_chat');
+    
+    setChatHistory([{ id: 'polling', role: 'system', text: 'Extracting biological signals from video...' }]);
+
     let formData = new FormData();
     formData.append('file', { uri, name: 'scan.mp4', type: 'video/mp4' } as any);
     
     try {
       const token = await AsyncStorage.getItem('userToken');
       const response = await fetch(`http://${IP_ADDRESS}:8000/api/scan`, {
-        method: 'POST', body: formData, headers: { 'Authorization': `Bearer ${token}` }, // Removed multipart explicit header
+        method: 'POST', body: formData, headers: { 'Authorization': `Bearer ${token}` },
       });
       const data = await response.json();
 
       if (data.task_id) {
-          const pollInterval = setInterval(async () => {
+          let isPolling = true;
+
+          const checkStatus = async () => {
+              if (!isPolling) return;
               try {
                   const statusRes = await fetch(`http://${IP_ADDRESS}:8000/api/scan/status/${data.task_id}`);
-                  if (!statusRes.ok) { clearInterval(pollInterval); setScanError("Server encountered an error."); setIsProcessing(false); return; }
+                  if (!statusRes.ok) {
+                      isPolling = false;
+                      setScanError("Server error.");
+                      return;
+                  }
                   const statusData = await statusRes.json();
                   
                   if (statusData.status === 'completed') {
-                      clearInterval(pollInterval);
+                      isPolling = false;
+                      
+                      setChatHistory(prev => [
+                          ...prev.filter(m => m.id !== 'polling'),
+                          { id: 'thinking', role: 'system', text: 'Analyzing your daily metrics...' }
+                      ]);
+                      
                       const fullBiometrics = { metrics: statusData.metrics, meta_scores: statusData.meta_scores };
                       setBiometrics(fullBiometrics); 
-                      setCurrentScreen('cloud_chat'); 
                       triggerInitialAgentMessage(fullBiometrics);
-                      setIsProcessing(false);
                   } else if (statusData.status === 'failed') {
-                      clearInterval(pollInterval); setScanError(statusData.error); setIsProcessing(false);
+                      isPolling = false; 
+                      setChatHistory(prev => [...prev.filter(m => m.id !== 'polling'), { id: 'err', role: 'system', text: 'Scan extraction failed.' }]);
+                  } else {
+                      setTimeout(checkStatus, 2000);
                   }
-              } catch (pollErr) { clearInterval(pollInterval); setScanError("Polling connection lost."); setIsProcessing(false); }
-          }, 2000); 
-      } else { setScanError(data.error); setIsProcessing(false); }
-    } catch (error) { setScanError("Network request failed."); setIsProcessing(false); } 
+              } catch (pollErr) {
+                  isPolling = false;
+              }
+          };
+
+          checkStatus();
+      } else {
+          setChatHistory(prev => [...prev.filter(m => m.id !== 'polling'), { id: 'err', role: 'system', text: data.error || 'Upload error.' }]);
+      }
+    } catch (error) { 
+        setChatHistory(prev => [...prev.filter(m => m.id !== 'polling'), { id: 'err', role: 'system', text: 'Network request failed.' }]); 
+    } 
   };
 
   const triggerInitialAgentMessage = async (metrics: any) => {
-      setIsAgentTyping(true);
       try {
           const token = await AsyncStorage.getItem('userToken');
           const response = await fetch(`http://${IP_ADDRESS}:8000/api/chat`, {
               method: 'POST', headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${token}` },
-              body: JSON.stringify({ biometrics: metrics, message: "I just completed my scan.", history: [] })
+              body: JSON.stringify({ 
+                  biometrics: metrics || {}, 
+                  message: "I just completed my scan.", 
+                  history: [],
+                  context_type: "scan"
+              })
           });
+          
+          if (!response.ok) throw new Error("Backend error");
+          
           const data = await response.json();
-          setChatHistory([{ role: 'agent', text: data.text, suggest_local: data.suggest_local_bot }]);
-      } catch (e) { setChatHistory([{ role: 'agent', text: "Error connecting to Agent." }]); } 
-      finally { setIsAgentTyping(false); }
+          
+          setChatHistory(prev => [
+              ...prev.filter(m => m.id !== 'thinking'),
+              { id: Date.now().toString(), role: 'agent', text: data.text, suggest_local: data.suggest_local_bot, isNew: true }
+          ]);
+      } catch (e) { 
+          setChatHistory(prev => [...prev.filter(m => m.id !== 'thinking'), { id: 'err', role: 'system', text: 'Error connecting to Agent.' }]); 
+      } 
+  };
+
+  const startAnytimeChat = () => {
+      setIsAnytimeMode(true);
+      setBiometrics(null); 
+      setCurrentScreen('cloud_chat');
+      
+      setChatHistory([
+          { 
+              id: Date.now().toString(), 
+              role: 'agent', 
+              text: `Hi ${userName || 'there'}! I've loaded your most recent health baseline. What's on your mind today?`, 
+              isNew: true 
+          }
+      ]);
+  };
+
+  const pickImage = async () => {
+      let result = await ImagePicker.launchImageLibraryAsync({
+          mediaTypes: ImagePicker.MediaTypeOptions.Images,
+          allowsEditing: true,
+          quality: 0.5,
+          base64: true 
+      });
+
+      if (!result.canceled && result.assets[0].base64) {
+          setSelectedImage({ uri: result.assets[0].uri, base64: result.assets[0].base64 });
+      }
   };
 
   const sendMessage = async () => {
-      if (!inputText.trim()) return;
-      const userMsg = inputText;
-      setChatHistory(prev => [...prev, { role: 'user', text: userMsg }]);
-      setInputText(""); setIsAgentTyping(true);
+      if (!inputText.trim() && !selectedImage) return;
+      const userMsg = inputText || "Please analyze this image.";
+      
+      const lowerMsg = userMsg.toLowerCase().trim();
+      const isSimpleMessage = 
+          lowerMsg.length < 15 || 
+          ['hi', 'hello', 'hey', 'morning', 'thanks', 'thank you', 'ok', 'okay', 'good', 'bye'].some(word => lowerMsg.includes(word));
+          
+      const loadingText = isSimpleMessage && !selectedImage
+          ? 'Cardia is typing...' 
+          : 'Consulting medical database & analyzing data...';
+      
+      const imageToUpload = selectedImage;
+      setSelectedImage(null);
+      
+      setChatHistory(prev => [
+          ...prev.map(m => ({...m, isNew: false})),
+          { id: Date.now().toString(), role: 'user', text: inputText, imageUri: imageToUpload?.uri }, 
+          { id: 'searching', role: 'system', text: loadingText }
+      ]);
+      setInputText(""); 
 
-      const formattedHistory = chatHistory.map(msg => ({ role: msg.role === 'user' ? 'user' : 'assistant', content: msg.text }));
+      const formattedHistory = chatHistory.filter(m => m.role !== 'system').map(msg => ({ role: msg.role === 'user' ? 'user' : 'assistant', content: msg.text }));
 
       try {
           const token = await AsyncStorage.getItem('userToken');
           const response = await fetch(`http://${IP_ADDRESS}:8000/api/chat`, {
               method: 'POST', headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${token}` },
-              body: JSON.stringify({ biometrics: biometrics, message: userMsg, history: formattedHistory })
+              body: JSON.stringify({ 
+                  biometrics: biometrics || {}, 
+                  message: userMsg, 
+                  image_data: imageToUpload?.base64 || null, 
+                  history: formattedHistory,
+                  context_type: isAnytimeMode ? "anytime" : "scan" 
+              })
           });
+          
+          if (!response.ok) throw new Error("Backend error");
+          
           const data = await response.json();
-          setChatHistory(prev => [...prev, { role: 'agent', text: data.text, suggest_local: data.suggest_local_bot }]);
-      } catch (e) { setChatHistory(prev => [...prev, { role: 'agent', text: "Network error." }]); } 
-      finally { setIsAgentTyping(false); }
+          
+          setChatHistory(prev => [
+              ...prev.filter(m => m.id !== 'searching'),
+              { id: Date.now().toString(), role: 'agent', text: data.text, suggest_local: data.suggest_local_bot, isNew: true }
+          ]);
+      } catch (e) { 
+          setChatHistory(prev => [...prev.filter(m => m.id !== 'searching'), { id: 'err', role: 'system', text: 'Network error.' }]); 
+      } 
+  };
+
+  const handleFoodChat = (foodItem: any) => {
+      const autoMessage = `I just scanned a food item: "${foodItem.name}". The system marked it as "${foodItem.verdict.toUpperCase()}" with the following notes:\n\n${foodItem.detailed_guideline}\n\nKey Macros: ${foodItem.macro_1_name} (${foodItem.macro_1_amount}), ${foodItem.macro_2_name} (${foodItem.macro_2_amount}).\n\nCan you give me more specific dietary advice on this?`;
+      
+      setCurrentScreen('cloud_chat');
+      setIsAnytimeMode(true);
+      setInputText(autoMessage); 
+      
+      setChatHistory([
+          { 
+              id: Date.now().toString(), 
+              role: 'agent', 
+              text: `I see you are asking about the ${foodItem.name} you just scanned! I've loaded its nutritional context. Feel free to hit send, or add any specific questions you have about it!`, 
+              isNew: true 
+          }
+      ]);
   };
 
   const handlePressIn = () => { Animated.spring(scaleAnim, { toValue: 0.95, useNativeDriver: true }).start(); };
   const handlePressOut = () => { Animated.spring(scaleAnim, { toValue: 1, friction: 3, tension: 40, useNativeDriver: true }).start(); };
+
+  const handleBackToHome = () => {
+      setCurrentScreen('home');
+      setChatHistory([]);
+      setInputText("");
+      setSelectedImage(null);
+      setIsAnytimeMode(false);
+  };
 
   if (!hasPermission || device == null || !fontsLoaded) return <ActivityIndicator style={{flex: 1, backgroundColor: '#FFF5F5'}} color="#D84361" />;
 
@@ -276,7 +440,6 @@ export default function App() {
               </TouchableOpacity>
           </Modal>
 
-          {/* 🚀 NEW: Metric Selection Dropdown */}
           <Modal visible={showMetricMenu} transparent animationType="fade">
               <TouchableOpacity style={styles.modalOverlayCenter} activeOpacity={1} onPress={() => setShowMetricMenu(false)}>
                   <View style={styles.metricModalCenter}>
@@ -351,10 +514,22 @@ export default function App() {
                       </TouchableOpacity>
                   </View>
 
+                  <TouchableOpacity style={styles.anytimeChatButton} onPress={startAnytimeChat} activeOpacity={0.8}>
+                      <View style={{flexDirection: 'row', alignItems: 'center'}}>
+                          <View style={styles.anytimeIconBg}>
+                              <Ionicons name="chatbubbles-outline" size={24} color="#FFF" />
+                          </View>
+                          <View style={{marginLeft: 15}}>
+                              <Text style={styles.anytimeTitle}>Chat with Cardia</Text>
+                              <Text style={styles.anytimeSubtitle}>Ask about your health anytime</Text>
+                          </View>
+                      </View>
+                      <Ionicons name="chevron-forward" size={20} color="#D84361" />
+                  </TouchableOpacity>
+
                   <View style={styles.graphContainer}>
                       <View style={{flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', marginBottom: 15}}>
                           
-                          {/* 🚀 NEW: Clickable Dropdown Trigger for Metric */}
                           <TouchableOpacity activeOpacity={0.7} onPress={() => setShowMetricMenu(true)} style={{flexDirection: 'row', alignItems: 'center'}}>
                               <Text style={styles.graphTitle}>{selectedMetric}</Text>
                               <Ionicons name="chevron-down-circle" size={22} color="#D84361" style={{marginLeft: 6}} />
@@ -400,56 +575,46 @@ export default function App() {
                       
                       <Text style={styles.graphSubtitle}>{getGraphSubtitle()}</Text>
                   </View>
-
               </ScrollView>
           )}
-
-          {/* ... [Scanner, Cloud Chat, and External Components remain unchanged] ... */}
 
           {currentScreen === 'scanner' && (
               <View style={{flex: 1, width: '100%', alignItems: 'center', backgroundColor: '#FFF5F5'}}>
                   <View style={styles.featureHeader}>
-                      <TouchableOpacity onPress={() => setCurrentScreen('home')} style={styles.backButton}>
-                          {!isRecording && !isProcessing && <Ionicons name="arrow-back" size={28} color="#D84361" />}
+                      <TouchableOpacity onPress={handleBackToHome} style={styles.backButton}>
+                          {!isRecording && <Ionicons name="arrow-back" size={28} color="#D84361" />}
                       </TouchableOpacity>
                       <Text style={styles.headerTitle}>Daily Vitals Scan</Text>
                       <View style={{width: 28}} />
                   </View>
 
                   <View style={{ flex: 1, justifyContent: 'center', alignItems: 'center', width: '100%' }}>
-                      {!isProcessing ? (
-                        <View style={styles.cameraWrapper}>
-                            <Camera 
-                                style={styles.camera} 
-                                device={device} 
-                                isActive={true} 
-                                video={true} 
-                                audio={false} 
-                                torch={isCameraReady && (isCalibrating || isRecording) ? 'on' : 'off'} 
-                                ref={cameraRef} 
-                                onInitialized={() => setIsCameraReady(true)} 
-                                resizeMode="cover" 
-                            />
-                            {isRecording && (
-                                <View style={styles.recordingOverlay}>
+                      <View style={styles.cameraWrapper}>
+                          <Camera 
+                              style={styles.camera} 
+                              device={device} 
+                              isActive={true} 
+                              video={true} 
+                              audio={false} 
+                              torch={isCameraReady && (isCalibrating || isRecording) ? 'on' : 'off'} 
+                              ref={cameraRef} 
+                              onInitialized={() => setIsCameraReady(true)} 
+                              resizeMode="cover" 
+                          />
+                          {isRecording && (
+                              <View style={styles.recordingOverlay}>
                                   <View style={styles.recordingBadge}><View style={styles.redDot} /><Text style={styles.recordingText}>{timeLeft}s</Text></View>
-                                </View>
-                            )}
-                        </View>
-                      ) : (
-                          <View style={[styles.cameraWrapper, {justifyContent: 'center', alignItems: 'center', backgroundColor: '#FFF'}]}>
-                              <ActivityIndicator size="large" color="#D84361" />
-                              <Text style={{color: '#8A6D72', marginTop: 15, fontFamily: 'Ubuntu_500Medium'}}>Extracting Biometrics...</Text>
-                          </View>
-                      )}
+                              </View>
+                          )}
+                      </View>
 
                       <View style={styles.controls}>
-                        {!isCalibrating && !isRecording && !isProcessing && (
+                        {!isCalibrating && !isRecording && (
                             <TouchableOpacity style={[styles.primaryButton, !isCameraReady && { backgroundColor: '#E0D4D6' }]} onPress={startCalibration} disabled={!isCameraReady}>
                                 <Text style={styles.buttonText}>{isCameraReady ? "Prepare Finger Scan" : "Warming up lens..."}</Text>
                             </TouchableOpacity>
                         )}
-                        {isCalibrating && !isRecording && !isProcessing && (
+                        {isCalibrating && !isRecording && (
                             <TouchableOpacity style={[styles.primaryButton, { backgroundColor: '#81C784' }]} onPress={startScan}>
                                 <Text style={styles.buttonText}>Screen is Red - Start</Text>
                             </TouchableOpacity>
@@ -466,7 +631,12 @@ export default function App() {
           )}
 
           {currentScreen === 'food_scanner' && (
-              <FoodScanner onClose={() => setCurrentScreen('home')} device={device} IP_ADDRESS={IP_ADDRESS} />
+              <FoodScanner 
+                  onClose={() => setCurrentScreen('home')} 
+                  onOpenChat={handleFoodChat} 
+                  device={device} 
+                  IP_ADDRESS={IP_ADDRESS} 
+              />
           )}
 
           {currentScreen === 'melio_chat' && (
@@ -480,10 +650,10 @@ export default function App() {
                   keyboardVerticalOffset={Platform.OS === 'ios' ? 90 : 0}
               >
                   <View style={styles.featureHeader}>
-                      <TouchableOpacity onPress={() => setCurrentScreen('home')} style={styles.backButton}>
+                      <TouchableOpacity onPress={handleBackToHome} style={styles.backButton}>
                           <Ionicons name="arrow-back" size={28} color="#D84361" />
                       </TouchableOpacity>
-                      <Text style={styles.headerTitle}>Cardia</Text>
+                      <Text style={styles.headerTitle}>{isAnytimeMode ? "Cardia" : "Cardia Analysis"}</Text>
                       <View style={{width: 28}} />
                   </View>
                   
@@ -494,21 +664,53 @@ export default function App() {
                       keyboardShouldPersistTaps="handled"
                       onContentSizeChange={() => chatScrollRef.current?.scrollToEnd({ animated: true })}
                   >
-                      {chatHistory.map((msg, i) => (
-                          <View key={i} style={{marginBottom: 15}}>
-                              <View style={msg.role === 'user' ? styles.userBubble : styles.agentBubble}>
-                                  <Text style={{color: msg.role === 'user' ? '#FFF' : '#5C4E50', fontFamily: 'Ubuntu_400Regular', fontSize: 16}}>{msg.text}</Text>
-                              </View>
-                              {msg.suggest_local && (
-                                  <TouchableOpacity style={styles.handoffButton} onPress={() => setCurrentScreen('melio_chat')}>
-                                      <Text style={{color: '#FFF', fontFamily: 'Ubuntu_500Medium'}}>🔒 Switch to Melio (Offline)</Text>
-                                  </TouchableOpacity>
+                      {chatHistory.map((msg) => (
+                          <View key={msg.id} style={{marginBottom: 15}}>
+                              
+                              {msg.role === 'system' ? (
+                                  <View style={styles.systemBubble}>
+                                      <ActivityIndicator size="small" color="#A09395" style={{marginRight: 8}} />
+                                      <Text style={styles.systemText}>{msg.text}</Text>
+                                  </View>
+                              ) : (
+                                  <View>
+                                      {msg.role === 'user' && msg.imageUri && (
+                                          <Image source={{ uri: msg.imageUri }} style={styles.chatImageBubble} />
+                                      )}
+                                      <View style={msg.role === 'user' ? styles.userBubble : styles.agentBubble}>
+                                          {msg.role === 'user' ? (
+                                              <Text style={{color: '#FFF', fontFamily: 'Ubuntu_400Regular', fontSize: 16, lineHeight: 24}}>
+                                                  {formatMessageText(msg.text || "Analyzed Image.")}
+                                              </Text>
+                                          ) : (
+                                              <TypewriterText text={msg.text} isNew={msg.isNew} />
+                                          )}
+                                      </View>
+                                      {msg.suggest_local && (
+                                          <TouchableOpacity style={styles.handoffButton} onPress={() => setCurrentScreen('melio_chat')}>
+                                              <Text style={{color: '#FFF', fontFamily: 'Ubuntu_500Medium'}}>🔒 Switch to Melio (Offline)</Text>
+                                          </TouchableOpacity>
+                                      )}
+                                  </View>
                               )}
                           </View>
                       ))}
-                      {isAgentTyping && <ActivityIndicator style={{alignSelf: 'flex-start', margin: 10}} color="#D84361" />}
                   </ScrollView>
+
+                  {selectedImage && (
+                      <View style={styles.previewContainer}>
+                          <Image source={{ uri: selectedImage.uri }} style={styles.previewImage} />
+                          <TouchableOpacity style={styles.previewRemoveBtn} onPress={() => setSelectedImage(null)}>
+                              <Ionicons name="close-circle" size={24} color="#D84361" />
+                          </TouchableOpacity>
+                      </View>
+                  )}
+
                   <View style={styles.inputArea}>
+                      <TouchableOpacity style={styles.attachButton} onPress={pickImage}>
+                          <Ionicons name="add" size={28} color="#A09395" />
+                      </TouchableOpacity>
+
                       <TextInput 
                           style={styles.input} 
                           value={inputText} 
@@ -519,7 +721,10 @@ export default function App() {
                           underlineColorAndroid="transparent"
                           onFocus={() => setTimeout(() => chatScrollRef.current?.scrollToEnd({ animated: true }), 300)}
                       />
-                      <TouchableOpacity style={styles.sendButton} onPress={sendMessage}><Text style={{color: '#FFF', fontFamily: 'Ubuntu_500Medium'}}>Send</Text></TouchableOpacity>
+                      
+                      <TouchableOpacity style={styles.sendButton} onPress={sendMessage}>
+                          <Ionicons name="arrow-up" size={22} color="#FFF" />
+                      </TouchableOpacity>
                   </View>
               </KeyboardAvoidingView>
           )}
@@ -538,7 +743,6 @@ const styles = StyleSheet.create({
   menuOverlay: { flex: 1, backgroundColor: 'rgba(0,0,0,0.15)' },
   dropdownMenu: { position: 'absolute', top: 90, right: 25, backgroundColor: '#FFF', borderRadius: 16, padding: 10, width: 170, shadowColor: '#D84361', shadowOffset: { width: 0, height: 8 }, shadowOpacity: 0.15, shadowRadius: 15, elevation: 8 },
   
-  // 🚀 NEW: Centered Modal styling for the Metric Selector
   modalOverlayCenter: { flex: 1, backgroundColor: 'rgba(92, 78, 80, 0.4)', justifyContent: 'center', alignItems: 'center' },
   metricModalCenter: { backgroundColor: '#FFF', borderRadius: 24, padding: 20, width: '75%', shadowColor: '#D84361', shadowOffset: { width: 0, height: 8 }, shadowOpacity: 0.15, shadowRadius: 15, elevation: 8 },
   metricModalTitle: { fontFamily: 'SourceSerifPro_700Bold', fontSize: 20, color: '#D84361', textAlign: 'center', marginBottom: 15 },
@@ -559,6 +763,11 @@ const styles = StyleSheet.create({
   gridTitle: { fontFamily: 'Ubuntu_500Medium', fontSize: 17, color: '#5C4E50', textAlign: 'center' },
   gridSubtitle: { fontFamily: 'Ubuntu_400Regular', fontSize: 13, color: '#8A6D72', marginTop: 6, textAlign: 'center' },
   
+  anytimeChatButton: { width: '85%', alignSelf: 'center', backgroundColor: '#FFFFFF', borderRadius: 20, paddingHorizontal: 20, paddingVertical: 18, flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', shadowColor: '#D84361', shadowOffset: { width: 0, height: 4 }, shadowOpacity: 0.08, shadowRadius: 12, elevation: 3, borderWidth: 1, borderColor: '#FFE4E4', marginTop: 25 },
+  anytimeIconBg: { backgroundColor: '#D84361', width: 44, height: 44, borderRadius: 22, justifyContent: 'center', alignItems: 'center' },
+  anytimeTitle: { fontFamily: 'Ubuntu_500Medium', fontSize: 17, color: '#5C4E50' },
+  anytimeSubtitle: { fontFamily: 'Ubuntu_400Regular', fontSize: 13, color: '#8A6D72', marginTop: 2 },
+
   featureHeader: { width: '100%', flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', paddingHorizontal: 20, paddingVertical: 15, borderBottomWidth: 1, borderColor: '#FFE4E4', backgroundColor: '#FFFFFF' },
   backButton: { padding: 5 },
   headerTitle: { fontFamily: 'SourceSerifPro_700Bold', fontSize: 24, color: '#D84361' },
@@ -580,9 +789,16 @@ const styles = StyleSheet.create({
   userBubble: { alignSelf: 'flex-end', backgroundColor: '#D84361', padding: 16, borderRadius: 20, borderBottomRightRadius: 5, maxWidth: '80%', shadowColor: '#D84361', shadowOffset: {width:0, height:2}, shadowOpacity:0.15, shadowRadius:4 },
   agentBubble: { alignSelf: 'flex-start', backgroundColor: '#FFFFFF', padding: 16, borderRadius: 20, borderBottomLeftRadius: 5, maxWidth: '80%', borderWidth: 1, borderColor: '#FFE4E4', shadowColor: '#000', shadowOffset: {width:0, height:2}, shadowOpacity:0.03, shadowRadius:4 },
   handoffButton: { alignSelf: 'flex-start', backgroundColor: '#5C4E50', padding: 12, borderRadius: 16, marginTop: 8, marginLeft: 5 },
+  
+  chatImageBubble: { width: 200, height: 200, borderRadius: 16, alignSelf: 'flex-end', marginBottom: 8 },
+  previewContainer: { paddingHorizontal: 20, paddingTop: 10, paddingBottom: 5, backgroundColor: '#FFFFFF', flexDirection: 'row' },
+  previewImage: { width: 60, height: 60, borderRadius: 12, borderWidth: 1, borderColor: '#FFE4E4' },
+  previewRemoveBtn: { position: 'absolute', top: 2, left: 65, backgroundColor: '#FFF', borderRadius: 12 },
+  
   inputArea: { flexDirection: 'row', padding: 15, backgroundColor: '#FFFFFF', width: '100%', borderTopWidth: 1, borderColor: '#FFE4E4', paddingBottom: Platform.OS === 'ios' ? 30 : 15, alignItems: 'flex-end' },
+  attachButton: { paddingRight: 10, paddingBottom: 10, justifyContent: 'center' },
   input: { flex: 1, fontFamily: 'Ubuntu_400Regular', backgroundColor: '#FFF5F5', color: '#5C4E50', borderRadius: 24, paddingHorizontal: 20, paddingTop: 15, paddingBottom: 15, marginRight: 12, minHeight: 50, maxHeight: 120, borderWidth: 1, borderColor: '#FFE4E4' },
-  sendButton: { backgroundColor: '#D84361', justifyContent: 'center', alignItems: 'center', paddingHorizontal: 24, borderRadius: 24, shadowColor: '#D84361', shadowOffset: {width:0, height:3}, shadowOpacity:0.2, shadowRadius:5, height: 50 },
+  sendButton: { backgroundColor: '#D84361', justifyContent: 'center', alignItems: 'center', width: 50, height: 50, borderRadius: 25, shadowColor: '#D84361', shadowOffset: {width:0, height:3}, shadowOpacity:0.2, shadowRadius:5 },
   
   graphContainer: { width: '90%', marginTop: 25, backgroundColor: '#FFFFFF', borderRadius: 24, padding: 20, shadowColor: '#D84361', shadowOffset: { width: 0, height: 6 }, shadowOpacity: 0.08, shadowRadius: 15, elevation: 5, borderWidth: 1, borderColor: '#FFE4E4', zIndex: 10 },
   graphTitle: { fontFamily: 'SourceSerifPro_700Bold', fontSize: 20, color: '#5C4E50' },
@@ -594,5 +810,8 @@ const styles = StyleSheet.create({
   timeframeTxtActive: { color: '#FFFFFF' },
   emptyChartContainer: { height: 220, justifyContent: 'center', alignItems: 'center', backgroundColor: '#FAFAFA', borderRadius: 16, marginVertical: 8, borderWidth: 1, borderColor: '#FFE4E4', borderStyle: 'dashed' },
   emptyChartText: { fontFamily: 'Ubuntu_500Medium', color: '#8A6D72', marginTop: 15, fontSize: 16 },
-  emptyChartSub: { fontFamily: 'Ubuntu_400Regular', color: '#A09395', fontSize: 13, marginTop: 5, textAlign: 'center', paddingHorizontal: 20 }
+  emptyChartSub: { fontFamily: 'Ubuntu_400Regular', color: '#A09395', fontSize: 13, marginTop: 5, textAlign: 'center', paddingHorizontal: 20 },
+  
+  systemBubble: { alignSelf: 'center', backgroundColor: '#F0EDED', paddingVertical: 10, paddingHorizontal: 16, borderRadius: 20, marginVertical: 8, flexDirection: 'row', alignItems: 'center' },
+  systemText: { color: '#8A6D72', fontFamily: 'Ubuntu_400Regular_Italic', fontSize: 13 }
 });

@@ -4,7 +4,7 @@ from fastapi.security import OAuth2PasswordBearer, OAuth2PasswordRequestForm
 from fastapi.middleware.cors import CORSMiddleware
 from sqlalchemy.orm import Session
 from pydantic import BaseModel
-from typing import List, Dict, Any
+from typing import List, Dict, Any, Optional
 from datetime import date, datetime, timedelta
 from food_pipeline import analyze_food_image
 import shutil
@@ -13,9 +13,6 @@ import numpy as np
 import os
 import traceback
 import json
-import traceback
-from fastapi import UploadFile, File, Depends
-from fastapi.responses import JSONResponse
 from celery.result import AsyncResult
 from worker import process_scan_task, celery_app
 from agent import app_graph
@@ -23,7 +20,6 @@ from database import engine, get_db
 import models
 import auth
 
-# Creates new tables automatically (like DailyScan)
 models.Base.metadata.create_all(bind=engine)
 
 app = FastAPI()
@@ -39,7 +35,7 @@ class UserCreate(BaseModel):
     gender: str
     height: str
     weight: str
-    goal: str # 🚀 NEW
+    goal: str 
     diet: str
     chronic_conditions: List[str]
     allergies: List[str]
@@ -50,9 +46,11 @@ class Token(BaseModel):
     token_type: str
 
 class ChatRequest(BaseModel):
-    biometrics: dict
+    biometrics: Optional[dict] = None
     message: str
+    image_data: Optional[str] = None # 🚀 NEW: Supports Base64 image payload
     history: List[Dict[str, Any]] = []
+    context_type: str = "scan"
 
 def get_current_user(token: str = Depends(oauth2_scheme), db: Session = Depends(get_db)):
     credentials_exception = HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Could not validate credentials", headers={"WWW-Authenticate": "Bearer"})
@@ -69,7 +67,6 @@ def get_current_user(token: str = Depends(oauth2_scheme), db: Session = Depends(
 def signup(user: UserCreate, db: Session = Depends(get_db)):
     if db.query(models.User).filter(models.User.email == user.email).first(): raise HTTPException(status_code=400, detail="Email already registered")
     hashed_pwd = auth.get_password_hash(user.password)
-    # 🚀 NEW: Included goal=user.goal
     new_user = models.User(email=user.email, hashed_password=hashed_pwd, full_name=user.full_name, dob=user.dob, gender=user.gender, height=user.height, weight=user.weight, goal=user.goal, diet=user.diet, chronic_conditions=user.chronic_conditions, allergies=user.allergies, additional_info=user.additional_info)
     db.add(new_user)
     db.commit()
@@ -83,7 +80,6 @@ def login(form_data: OAuth2PasswordRequestForm = Depends(), db: Session = Depend
     access_token = auth.create_access_token(data={"sub": user.email})
     return {"access_token": access_token, "token_type": "bearer"}
 
-# --- PROFILE MANAGEMENT ROUTES ---
 @app.get("/api/auth/profile")
 def get_profile(current_user: models.User = Depends(get_current_user)):
     return {
@@ -99,7 +95,6 @@ def update_profile(profile_data: dict, db: Session = Depends(get_db), current_us
     db.commit()
     return {"status": "success", "message": "Profile updated securely."}
 
-# --- CALENDAR & TREND ROUTES ---
 @app.get("/api/calendar")
 def get_calendar_data(db: Session = Depends(get_db), current_user: models.User = Depends(get_current_user)):
     scans = db.query(models.DailyScan.scan_date).filter(models.DailyScan.user_id == current_user.id).all()
@@ -120,7 +115,7 @@ def get_scan_context(target_date: str, db: Session = Depends(get_db), current_us
 @app.get("/api/trends")
 def get_trends(
     timeframe: str = "7_days", 
-    metric: str = "energy", # 🚀 NEW: Added metric parameter
+    metric: str = "energy", 
     db: Session = Depends(get_db), 
     current_user: models.User = Depends(get_current_user)
 ):
@@ -137,17 +132,12 @@ def get_trends(
         models.DailyScan.scan_date >= start_date
     ).order_by(models.DailyScan.scan_date).all()
     
-    # 🚀 FIXED: Dynamically map the metric string to the database column
     scan_dict = {}
     for scan in scans:
-        if metric == "stress":
-            score = scan.stress_score
-        elif metric == "focus":
-            score = scan.focus_score
-        elif metric == "health":
-            score = scan.health_score
-        else:
-            score = scan.energy_score # Default fallback
+        if metric == "stress": score = scan.stress_score
+        elif metric == "focus": score = scan.focus_score
+        elif metric == "health": score = scan.health_score
+        else: score = scan.energy_score 
             
         scan_dict[scan.scan_date] = score
         
@@ -165,7 +155,6 @@ def get_trends(
         
     return {"labels": labels, "datasets": [{"data": data}]}
 
-# --- ASYNC CELERY SCAN ROUTES ---
 @app.post("/api/scan")
 async def process_finger_video(file: UploadFile = File(...), current_user: models.User = Depends(get_current_user)):
     print(f"\n--- Extracting Scan for: {current_user.email} ---")
@@ -215,23 +204,31 @@ def get_scan_status(task_id: str):
     except Exception as e:
         return {"status": "failed", "error": f"Broker error: {str(e)}"}
 
-# --- CHAT ROUTE WITH INVISIBLE AUTO-SAVE ---
 @app.post("/api/chat")
 async def chat_endpoint(req: ChatRequest, current_user: models.User = Depends(get_current_user), db: Session = Depends(get_db)):
     try:
-        print(f"\n--- Starting LangGraph Agent for: {current_user.email} ---")
+        print(f"\n--- Starting LangGraph Agent for: {current_user.email} [{req.context_type.upper()}] ---")
         conds = ", ".join(current_user.chronic_conditions) if current_user.chronic_conditions else "None"
         algs = ", ".join(current_user.allergies) if current_user.allergies else "None"
         history_text = "\n".join([f"{msg['role']}: {msg['content']}" for msg in req.history[-4:]]) if req.history else "None"
         
-        # 🚀 ROBUST EXTRACTION LOGIC
-        metrics = req.biometrics.get("metrics", req.biometrics)
-        meta = req.biometrics.get("meta_scores", req.biometrics)
+        bio_data = req.biometrics or {}
+        
+        if req.context_type == "anytime":
+            latest_scan = db.query(models.DailyScan).filter(models.DailyScan.user_id == current_user.id).order_by(models.DailyScan.scan_date.desc()).first()
+            if latest_scan:
+                bio_data = {
+                    "metrics": {"hr_bpm": latest_scan.hr_bpm, "raw_stress_index": latest_scan.stress_score},
+                    "meta_scores": {"energy": latest_scan.energy_score, "focus": latest_scan.focus_score}
+                }
+
+        metrics = bio_data.get("metrics", {})
+        meta = bio_data.get("meta_scores", {})
 
         clinical_context = f"""[SYSTEM CLINICAL STATE - DO NOT ACKNOWLEDGE TO USER]
 Age/DOB: {current_user.dob} | Gender: {current_user.gender}
 Height: {current_user.height} | Weight: {current_user.weight}
-Primary Health Goal: {current_user.goal}  <-- 🚀 NEW INJECTION
+Primary Health Goal: {current_user.goal}
 Dietary Routine: {current_user.diet}
 Allergies: {algs}
 Chronic Conditions: {conds}
@@ -245,13 +242,14 @@ User Message: {req.message}"""
 
         initial_state = {
             "original_text": clinical_context,
-            "biometrics": req.biometrics,
+            "biometrics": bio_data,
             "clinical_insights": "",
             "anonymized_text": "",
             "pii_mapping": {},
             "needs_research": False,
             "research_query": "",
             "research_results": "",
+            "image_data": req.image_data or "", # 🚀 Pass image into State
             "draft_response": "",
             "retry_count": 0,
             "search_retry_count": 0,
@@ -261,7 +259,6 @@ User Message: {req.message}"""
         
         result = app_graph.invoke(initial_state)
         final_answer = result["response"]
-        
         heuristics_block = result.get("clinical_insights", "")
         
         if "[END SYSTEM STATE]" in final_answer:
@@ -269,12 +266,10 @@ User Message: {req.message}"""
             if final_answer.startswith("User Message:"):
                 final_answer = final_answer.split("\n", 1)[-1].strip()
 
-        # 🚀 INVISIBLE AUTO-SAVE
-        if req.message == "I just completed my scan.":
+        if req.context_type == "scan" and req.message == "I just completed my scan.":
             today = date.today()
             existing_scan = db.query(models.DailyScan).filter(models.DailyScan.user_id == current_user.id, models.DailyScan.scan_date == today).first()
             
-            # Secure Fallback extraction ensuring ints/floats
             hr = float(metrics.get("hr_bpm", 70))
             st = int(meta.get("stress", 0))
             en = int(meta.get("energy", 0))
@@ -304,16 +299,12 @@ User Message: {req.message}"""
         traceback.print_exc()
         return JSONResponse(status_code=500, content={"error": str(e)})
     
-
 @app.post("/api/analyze_food")
 async def analyze_food_endpoint(image: UploadFile = File(...), current_user: models.User = Depends(get_current_user)):
-    # 🚀 NEW: Prepended Goal to the food scanner system instruction
     user_profile = f"Goal: {current_user.goal}. Conditions: {', '.join(current_user.chronic_conditions)}. Allergies: {', '.join(current_user.allergies)}. Diet: {current_user.diet}."
     
     try:
-        # 🚀 FIX: Read bytes entirely in memory. Zero disk I/O latency!
         image_bytes = await image.read()
-        
         results = analyze_food_image(image_bytes, user_profile, image.content_type)
         return JSONResponse(content={"results": results})
         

@@ -1,19 +1,70 @@
-import React, { useState, useRef } from 'react';
-import { StyleSheet, Text, View, ActivityIndicator, TouchableOpacity, Modal, Image, Platform } from 'react-native';
+import React, { useState, useRef, useEffect } from 'react';
+import { StyleSheet, Text, View, ActivityIndicator, TouchableOpacity, Modal, Image, Platform, ScrollView, Animated, Easing } from 'react-native';
 import { Camera } from 'react-native-vision-camera';
 import { Ionicons } from '@expo/vector-icons';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import * as ImagePicker from 'expo-image-picker';
 
-type FoodResult = { id: string, name: string, verdict: 'safe' | 'warning' | 'unsafe', justification: string, box?: {x: number, y: number, w: number, h: number} };
+export type FoodResult = { 
+    id: string; 
+    name: string; 
+    verdict: 'safe' | 'warning' | 'unsafe'; 
+    detailed_guideline: string;
+    macro_1_name: string;
+    macro_1_amount: string;
+    macro_2_name: string;
+    macro_2_amount: string;
+    box?: {x: number, y: number, w: number, h: number};
+};
 
 interface FoodScannerProps {
     onClose: () => void;
+    onOpenChat: (foodItem: FoodResult) => void; 
     device: any;
     IP_ADDRESS: string;
 }
 
-export default function FoodScanner({ onClose, device, IP_ADDRESS }: FoodScannerProps) {
+// 🚀 The continuous ripple animation (separated from the touchable area)
+const ConcentricRing = ({ color, delay }: { color: string, delay: number }) => {
+    const animationValue = useRef(new Animated.Value(0)).current;
+
+    useEffect(() => {
+        const timeout = setTimeout(() => {
+            Animated.loop(
+                Animated.timing(animationValue, {
+                    toValue: 1,
+                    duration: 2500, 
+                    easing: Easing.out(Easing.quad),
+                    useNativeDriver: true,
+                })
+            ).start();
+        }, delay);
+
+        return () => clearTimeout(timeout);
+    }, [delay]);
+
+    const scale = animationValue.interpolate({
+        inputRange: [0, 1],
+        outputRange: [1, 2.5], 
+    });
+
+    const opacity = animationValue.interpolate({
+        inputRange: [0, 0.1, 1],
+        outputRange: [0, 1, 0], 
+    });
+
+    return (
+        <Animated.View
+            style={[
+                styles.concentricRing,
+                { borderColor: color },
+                { transform: [{ scale }], opacity },
+            ]}
+        />
+    );
+};
+
+export default function FoodScanner({ onClose, onOpenChat, device, IP_ADDRESS }: FoodScannerProps) {
     const cameraRef = useRef<Camera>(null);
     const [isAnalyzingFood, setIsAnalyzingFood] = useState(false);
     const [isCameraInitialized, setIsCameraInitialized] = useState(false);
@@ -22,7 +73,6 @@ export default function FoodScanner({ onClose, device, IP_ADDRESS }: FoodScanner
     const [selectedFood, setSelectedFood] = useState<FoodResult | null>(null);
     const [capturedImageUri, setCapturedImageUri] = useState<string | null>(null);
 
-    // 🚀 NEW: Consolidated pipeline for processing any image (Camera OR Gallery)
     const processImagePayload = async (uri: string) => {
         setCapturedImageUri(uri);
         setIsAnalyzingFood(true); 
@@ -43,13 +93,11 @@ export default function FoodScanner({ onClose, device, IP_ADDRESS }: FoodScanner
             setFoodResults(data.results || []);
         } catch (error) { 
             console.error("Vision API Error:", error); 
-            setCapturedImageUri(null); 
         } finally { 
             setIsAnalyzingFood(false); 
         }
     };
 
-    // Handler 1: Live Camera Capture
     const captureFromCamera = async () => {
         if (!cameraRef.current || !isCameraInitialized) return;
         try {
@@ -61,18 +109,16 @@ export default function FoodScanner({ onClose, device, IP_ADDRESS }: FoodScanner
         }
     };
 
-    // Handler 2: Gallery Selection
     const pickFromGallery = async () => {
         try {
             const result = await ImagePicker.launchImageLibraryAsync({
                 mediaTypes: ImagePicker.MediaTypeOptions.Images,
-                quality: 0.8, // Slight compression to keep latency low
+                quality: 0.8, 
                 allowsEditing: false, 
             });
 
             if (!result.canceled && result.assets[0]) {
                 const photoPath = result.assets[0].uri;
-                // Ensure correct file path formatting for React Native
                 const uri = Platform.OS === 'android' && !photoPath.startsWith('file://') && !photoPath.startsWith('content://') 
                     ? `file://${photoPath}` 
                     : photoPath;
@@ -105,24 +151,40 @@ export default function FoodScanner({ onClose, device, IP_ADDRESS }: FoodScanner
                             
                             const top = `${topVal}%` as any;
                             const left = `${leftVal}%` as any;
+
+                            const getVerdictColor = (verdict: string, opacity: number = 0.85) => {
+                                if (verdict === 'safe') return `rgba(129, 199, 132, ${opacity})`;
+                                if (verdict === 'warning') return `rgba(255, 183, 77, ${opacity})`;
+                                return `rgba(229, 115, 115, ${opacity})`;
+                            };
                             
-                            const isSafe = item.verdict === 'safe';
-                            const isWarning = item.verdict === 'warning';
-                            
+                            const verdictColor = getVerdictColor(item.verdict);
+                            const verdictBorderColor = getVerdictColor(item.verdict, 1.0); 
+
                             return (
-                                <TouchableOpacity 
-                                    key={item.id || index.toString()} 
-                                    style={[
-                                        styles.arBlob, 
-                                        { top, left },
-                                        isSafe ? { backgroundColor: 'rgba(129, 199, 132, 0.85)' } : 
-                                        isWarning ? { backgroundColor: 'rgba(255, 183, 77, 0.85)' } : 
-                                        { backgroundColor: 'rgba(229, 115, 115, 0.85)' }
-                                    ]}
-                                    onPress={() => setSelectedFood(item)}
-                                >
-                                    <View style={styles.arBlobInner} />
-                                </TouchableOpacity>
+                                // 🚀 FIXED: The anchor point is just a 0x0 coordinate. 
+                                // pointerEvents="box-none" ensures the container itself can't be clicked.
+                                <View key={item.id || index.toString()} style={[styles.arAnchorPoint, { top, left }]} pointerEvents="box-none">
+                                    
+                                    {/* 🚀 Rings are isolated here and ignore touches entirely */}
+                                    <View style={styles.ringContainer} pointerEvents="none">
+                                        <ConcentricRing color={verdictBorderColor} delay={0} />
+                                        <ConcentricRing color={verdictBorderColor} delay={800} />
+                                        <ConcentricRing color={verdictBorderColor} delay={1600} />
+                                    </View>
+
+                                    {/* 🚀 The actual button perfectly wraps ONLY the Map Pin */}
+                                    <TouchableOpacity 
+                                        style={styles.touchablePin}
+                                        onPress={() => setSelectedFood(item)}
+                                        activeOpacity={0.8}
+                                    >
+                                        <View style={[styles.arBlobMainCircle, { backgroundColor: verdictColor }]}>
+                                            <View style={styles.arBlobInner} />
+                                        </View>
+                                        <View style={[styles.arPointerTriangle, { borderTopColor: verdictColor }]} />
+                                    </TouchableOpacity>
+                                </View>
                             );
                         })}
                     </>
@@ -150,29 +212,14 @@ export default function FoodScanner({ onClose, device, IP_ADDRESS }: FoodScanner
             <View style={styles.visionControls}>
                 {!capturedImageUri ? (
                     <View style={styles.actionRow}>
-                        {/* 🚀 NEW: Gallery Upload Button */}
-                        <TouchableOpacity 
-                            style={styles.sideButton} 
-                            onPress={pickFromGallery}
-                            disabled={isAnalyzingFood}
-                        >
+                        <TouchableOpacity style={styles.sideButton} onPress={pickFromGallery} disabled={isAnalyzingFood}>
                             <Ionicons name="images" size={24} color="#FFF" />
                         </TouchableOpacity>
 
-                        {/* Main Camera Capture Button */}
-                        <TouchableOpacity 
-                            style={[styles.captureButton, !isCameraInitialized && { opacity: 0.5 }]} 
-                            onPress={captureFromCamera} 
-                            disabled={isAnalyzingFood || !isCameraInitialized}
-                        >
-                            {isCameraInitialized ? (
-                                <Ionicons name="scan-outline" size={34} color="#D84361" />
-                            ) : (
-                                <ActivityIndicator color="#D84361" />
-                            )}
+                        <TouchableOpacity style={[styles.captureButton, !isCameraInitialized && { opacity: 0.5 }]} onPress={captureFromCamera} disabled={isAnalyzingFood || !isCameraInitialized}>
+                            {isCameraInitialized ? <Ionicons name="scan-outline" size={34} color="#D84361" /> : <ActivityIndicator color="#D84361" />}
                         </TouchableOpacity>
 
-                        {/* Invisible placeholder to keep the main button perfectly centered in the flex row */}
                         <View style={{ width: 54 }} />
                     </View>
                 ) : (
@@ -194,11 +241,35 @@ export default function FoodScanner({ onClose, device, IP_ADDRESS }: FoodScanner
                         <View style={[styles.verdictBadge, selectedFood?.verdict === 'safe' ? {backgroundColor: '#81C784'} : selectedFood?.verdict === 'warning' ? {backgroundColor: '#FFB74D'} : {backgroundColor: '#E57373'}]}>
                             <Text style={styles.verdictText}>{selectedFood?.verdict?.toUpperCase()}</Text>
                         </View>
-                        <Text style={styles.modalJustification}>{selectedFood?.justification}</Text>
                         
-                        <TouchableOpacity style={[styles.modalCloseButton, {marginTop: 10, width: '100%', alignItems: 'center'}]} onPress={() => setSelectedFood(null)}>
-                            <Text style={styles.buttonText}>Close</Text>
-                        </TouchableOpacity>
+                        <View style={styles.macroGrid}>
+                            <View style={styles.macroCard}>
+                                <Text style={styles.macroValue}>{selectedFood?.macro_1_amount}</Text>
+                                <Text style={styles.macroName}>{selectedFood?.macro_1_name}</Text>
+                            </View>
+                            <View style={styles.macroCard}>
+                                <Text style={styles.macroValue}>{selectedFood?.macro_2_amount}</Text>
+                                <Text style={styles.macroName}>{selectedFood?.macro_2_name}</Text>
+                            </View>
+                        </View>
+
+                        <ScrollView style={{maxHeight: 120, width: '100%', marginBottom: 20}} showsVerticalScrollIndicator={false}>
+                            <Text style={styles.modalJustification}>{selectedFood?.detailed_guideline}</Text>
+                        </ScrollView>
+                        
+                        <View style={styles.actionButtonRow}>
+                            <TouchableOpacity style={styles.chatHandoffButton} onPress={() => {
+                                if (selectedFood) onOpenChat(selectedFood);
+                                setSelectedFood(null);
+                            }}>
+                                <Ionicons name="chatbubbles" size={20} color="#FFF" style={{marginRight: 8}} />
+                                <Text style={styles.buttonText}>Ask Cardia</Text>
+                            </TouchableOpacity>
+
+                            <TouchableOpacity style={styles.modalCloseButton} onPress={() => setSelectedFood(null)}>
+                                <Text style={styles.buttonTextDark}>Close</Text>
+                            </TouchableOpacity>
+                        </View>
                     </View>
                 </View>
             </Modal>
@@ -206,32 +277,100 @@ export default function FoodScanner({ onClose, device, IP_ADDRESS }: FoodScanner
     );
 }
 
+// 🚀 Exact dimensions of the marker
+const BLOB_DIAMETER = 44;
+const TRIANGLE_HEIGHT = 14;
+const TOTAL_ANCHOR_OFFSET_Y = BLOB_DIAMETER + TRIANGLE_HEIGHT; // 58
+const TOTAL_ANCHOR_OFFSET_X = BLOB_DIAMETER / 2; // 22
+
 const styles = StyleSheet.create({
     featureHeader: { width: '100%', flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', paddingHorizontal: 20, paddingVertical: 15 },
     backButton: { padding: 5 },
     headerTitle: { fontFamily: 'SourceSerifPro_700Bold', fontSize: 24 },
     
-    // Controls Container
     visionControls: { position: 'absolute', bottom: 40, width: '100%', alignItems: 'center' },
     actionRow: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', width: '65%' },
     
-    // Buttons
     captureButton: { width: 80, height: 80, borderRadius: 40, backgroundColor: '#FFF5F5', justifyContent: 'center', alignItems: 'center', borderWidth: 4, borderColor: '#D84361', shadowColor: '#000', shadowOffset: { width: 0, height: 4 }, shadowOpacity: 0.3, shadowRadius: 5 },
     sideButton: { width: 54, height: 54, borderRadius: 27, backgroundColor: 'rgba(255, 255, 255, 0.2)', justifyContent: 'center', alignItems: 'center', borderWidth: 1, borderColor: 'rgba(255, 255, 255, 0.4)' },
     
-    // AR Blobs
-    arBlob: { position: 'absolute', width: 44, height: 44, borderRadius: 22, borderWidth: 3, borderColor: '#FFFFFF', justifyContent: 'center', alignItems: 'center', shadowColor: '#000', shadowOffset: { width: 0, height: 4 }, shadowOpacity: 0.4, shadowRadius: 6, elevation: 8, transform: [{ translateX: -22 }, { translateY: -22 }] },
+    // 🚀 NEW: Clean Layout Separation
+    arAnchorPoint: {
+        position: 'absolute',
+        width: 0,
+        height: 0,
+        zIndex: 10,
+    },
+    ringContainer: {
+        position: 'absolute',
+        // Centers the ripples perfectly behind the circular part of the pin
+        top: -(TRIANGLE_HEIGHT + BLOB_DIAMETER), 
+        left: -TOTAL_ANCHOR_OFFSET_X, 
+        width: BLOB_DIAMETER,
+        height: BLOB_DIAMETER,
+        justifyContent: 'center',
+        alignItems: 'center',
+    },
+    concentricRing: {
+        position: 'absolute',
+        width: BLOB_DIAMETER,
+        height: BLOB_DIAMETER,
+        borderRadius: BLOB_DIAMETER / 2,
+        borderWidth: 2,
+        backgroundColor: 'transparent',
+    },
+    touchablePin: {
+        position: 'absolute',
+        width: BLOB_DIAMETER,
+        height: TOTAL_ANCHOR_OFFSET_Y, // Extends all the way down to the tip
+        alignItems: 'center',
+        left: -TOTAL_ANCHOR_OFFSET_X, // Shifts left by half diameter to center
+        top: -TOTAL_ANCHOR_OFFSET_Y,  // Shifts up so bottom tip lands on 0,0
+    },
+    arBlobMainCircle: {
+        width: BLOB_DIAMETER,
+        height: BLOB_DIAMETER,
+        borderRadius: BLOB_DIAMETER / 2,
+        borderWidth: 3,
+        borderColor: '#FFFFFF',
+        justifyContent: 'center',
+        alignItems: 'center',
+        shadowColor: '#000', shadowOffset: { width: 0, height: 4 }, shadowOpacity: 0.4, shadowRadius: 6, elevation: 8
+    },
     arBlobInner: { width: 14, height: 14, borderRadius: 7, backgroundColor: '#FFFFFF', opacity: 0.85 },
+    arPointerTriangle: {
+        width: 0, 
+        height: 0,
+        backgroundColor: 'transparent',
+        borderStyle: 'solid',
+        borderLeftWidth: 8, 
+        borderRightWidth: 8,
+        borderTopWidth: TRIANGLE_HEIGHT, 
+        borderLeftColor: 'transparent', 
+        borderRightColor: 'transparent',
+        marginTop: -3, // Overlaps the circle border seamlessly
+        shadowColor: '#000', shadowOffset: { width: 0, height: 4 }, shadowOpacity: 0.3, shadowRadius: 4, elevation: 4
+    },
 
-    // Overlays & Modals
     scanningOverlay: { ...StyleSheet.absoluteFillObject, backgroundColor: 'rgba(0,0,0,0.7)', justifyContent: 'center', alignItems: 'center' },
     scanningText: { fontFamily: 'Ubuntu_500Medium', color: '#FFF', marginTop: 15, fontSize: 16 },
-    modalOverlay: { flex: 1, backgroundColor: 'rgba(0,0,0,0.4)', justifyContent: 'center', alignItems: 'center' },
-    modalContent: { width: '85%', backgroundColor: '#FFF', borderRadius: 24, padding: 25, alignItems: 'center', shadowColor: '#000', shadowOffset: { width: 0, height: 10 }, shadowOpacity: 0.2, shadowRadius: 15 },
-    modalTitle: { fontFamily: 'SourceSerifPro_700Bold', fontSize: 24, marginBottom: 15, color: '#5C4E50', textAlign: 'center' },
-    verdictBadge: { paddingHorizontal: 16, paddingVertical: 6, borderRadius: 16, marginBottom: 15 },
+    
+    modalOverlay: { flex: 1, backgroundColor: 'rgba(0,0,0,0.5)', justifyContent: 'center', alignItems: 'center' },
+    modalContent: { width: '88%', backgroundColor: '#FFF', borderRadius: 24, padding: 25, alignItems: 'center', shadowColor: '#000', shadowOffset: { width: 0, height: 10 }, shadowOpacity: 0.2, shadowRadius: 15 },
+    modalTitle: { fontFamily: 'SourceSerifPro_700Bold', fontSize: 24, marginBottom: 12, color: '#5C4E50', textAlign: 'center' },
+    verdictBadge: { paddingHorizontal: 16, paddingVertical: 6, borderRadius: 16, marginBottom: 20 },
     verdictText: { fontFamily: 'Ubuntu_500Medium', color: '#FFF', fontSize: 13, letterSpacing: 0.5 },
-    modalJustification: { fontFamily: 'Ubuntu_400Regular', fontSize: 16, color: '#8A6D72', textAlign: 'center', marginBottom: 25, lineHeight: 24 },
-    modalCloseButton: { backgroundColor: '#D84361', paddingVertical: 14, paddingHorizontal: 35, borderRadius: 20 },
-    buttonText: { fontFamily: 'Ubuntu_500Medium', color: '#FFF', fontSize: 18 },
+    
+    macroGrid: { flexDirection: 'row', justifyContent: 'space-between', width: '100%', marginBottom: 20 },
+    macroCard: { flex: 1, backgroundColor: '#FFF5F5', borderRadius: 16, paddingVertical: 12, marginHorizontal: 5, alignItems: 'center', borderWidth: 1, borderColor: '#FFE4E4' },
+    macroValue: { fontFamily: 'SourceSerifPro_700Bold', fontSize: 18, color: '#D84361', marginBottom: 2 },
+    macroName: { fontFamily: 'Ubuntu_500Medium', fontSize: 12, color: '#8A6D72' },
+    
+    modalJustification: { fontFamily: 'Ubuntu_400Regular', fontSize: 15, color: '#5C4E50', textAlign: 'center', lineHeight: 24 },
+    
+    actionButtonRow: { flexDirection: 'row', justifyContent: 'space-between', width: '100%', marginTop: 5 },
+    chatHandoffButton: { flex: 1, backgroundColor: '#D84361', flexDirection: 'row', paddingVertical: 14, borderRadius: 20, justifyContent: 'center', alignItems: 'center', marginRight: 10 },
+    modalCloseButton: { backgroundColor: '#F0EDED', paddingVertical: 14, paddingHorizontal: 25, borderRadius: 20, justifyContent: 'center' },
+    buttonText: { fontFamily: 'Ubuntu_500Medium', color: '#FFF', fontSize: 16 },
+    buttonTextDark: { fontFamily: 'Ubuntu_500Medium', color: '#8A6D72', fontSize: 16 },
 });
