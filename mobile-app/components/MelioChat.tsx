@@ -1,4 +1,4 @@
-// components/MelioChat.tsx
+
 import React, { useState, useRef, useEffect, useCallback } from 'react';
 import {
     StyleSheet, Text, View, ActivityIndicator, ScrollView,
@@ -7,7 +7,8 @@ import {
 } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
 import { initLlama, LlamaContext } from 'llama.rn';
-import { File, Paths } from 'expo-file-system';
+import { File, Paths } from 'expo-file-system'; // 🚀 Back to the SDK 52 API
+import { useDownload, MODEL_FILENAME } from '../context/DownloadContext';
 
 // ─────────────────────────────────────────────
 // Types & Interfaces
@@ -30,17 +31,8 @@ interface MelioAlertConfig {
     buttons: MelioAlertButton[];
 }
 
-// ─────────────────────────────────────────────
-// Constants
-// ─────────────────────────────────────────────
-const HF_MODEL_URL = 'https://huggingface.co/Qwen/Qwen2.5-1.5B-Instruct-GGUF/resolve/main/qwen2.5-1.5b-instruct-q4_k_m.gguf';
-const MODEL_FILENAME = 'qwen_melio_q4.gguf';
-const MODEL_SIZE_MB = 970;
-const MIN_VALID_BYTES = MODEL_SIZE_MB * 1024 * 1024 * 0.9;
-
-// ─────────────────────────────────────────────
 // Crisis Detection
-// ─────────────────────────────────────────────
+
 const CRISIS_KEYWORDS = [
     'kill myself', 'end my life', 'want to die', 'suicide', 'suicidal',
     'not worth living', 'no reason to live', 'better off dead', 'end it all',
@@ -57,25 +49,38 @@ const HELPLINE_MESSAGE =
 const detectCrisis = (text: string) =>
     CRISIS_KEYWORDS.some(kw => text.toLowerCase().includes(kw));
 
-// ─────────────────────────────────────────────
-// System Prompt — Proactive & Actionable CBT
-// ─────────────────────────────────────────────
-// 🚀 UPGRADED: Aggressively actionable. No fluff. Direct interventions.
-const MELIO_SYSTEM_PROMPT = `You are Melio, a proactive, highly practical mental wellness coach. 
-You do NOT just offer generic empathy. You offer ACTIONABLE mental tools and direct guidance.
+// System Prompt — Conversational & Proactive CBT
 
-YOUR PRIME DIRECTIVES:
-1. NO EMPTY EMPATHY: Never say "I understand", "It's natural to feel", or "I'm here for you." Skip the fluff. Get straight to helping.
-2. BE PROACTIVE: Never ask the user "How do you usually cope?" or "What do you need?". They don't know. That is why they are talking to you. 
-3. GIVE ACTIONABLE TOOLS: When a user is stressed, stuck, or anxious, immediately guide them through a specific micro-exercise:
-   - If overwhelmed/studying/working: Suggest breaking the task into just the "next 5 minutes" or picking one tiny micro-task.
-   - If physically anxious: Guide them through 4-7-8 breathing or the 5-4-3-2-1 grounding method right there in the chat.
-   - If stuck in negative thoughts: Ask them to reframe it by thinking about what a compassionate friend would say.
-4. TONE: Speak warmly, directly, and in the first person ("I"). Keep replies concise but highly useful (2-4 sentences).`;
+const MELIO_SYSTEM_PROMPT = `You are Melio, a highly capable, offline mental wellness companion running directly on the user's device. 
+Your goal is to be conversational, deeply empathetic, and highly practical. 
 
-// ─────────────────────────────────────────────
+CORE RULES:
+1. CONVERSATIONAL MEMORY: Pay close attention to the chat history. Remember the user's name, their past statements, and the flow of the conversation.
+2. NATURAL RESPONSES: If the user is just chatting normally, doing math, or testing you, respond naturally to what they asked. Do NOT force mental health advice if they are just saying "hello" or asking a general question.
+3. MENTAL HEALTH SUPPORT: If the user expresses stress, anxiety, or sadness, pivot to a supportive CBT (Cognitive Behavioral Therapy) style. Offer ONE practical grounding technique (like 4-7-8 breathing) or a gentle reframing question.
+4. TONE: Speak warmly and concisely. Do not use generic filler like "I'm here for you."`;
+
+// 🚀 NEW: Markdown Text Formatter
+
+const formatMessageText = (text: string) => {
+    if (!text) return null;
+
+    const parts = text.split(/(\*\*.*?\*\*)/g);
+    
+    return parts.map((part, i) => {
+        if (part.startsWith('**') && part.endsWith('**')) {
+            return (
+                <Text key={i} style={{ fontFamily: 'Ubuntu_500Medium' }}>
+                    {part.replace(/\*\*/g, '')}
+                </Text>
+            );
+        }
+        return <Text key={i}>{part}</Text>;
+    });
+};
+
 // Custom Alert Modal Component
-// ─────────────────────────────────────────────
+
 function MelioAlertModal({ visible, config, onDismiss }: { visible: boolean; config: MelioAlertConfig | null; onDismiss: () => void; }) {
     const scaleAnim = useRef(new Animated.Value(0.85)).current;
     const opacityAnim = useRef(new Animated.Value(0)).current;
@@ -138,18 +143,17 @@ function MelioAlertModal({ visible, config, onDismiss }: { visible: boolean; con
     );
 }
 
-// ─────────────────────────────────────────────
 // Main Component
-// ─────────────────────────────────────────────
+
 export default function MelioChat({ onClose, biometrics }: MelioChatProps) {
+    const { isDownloading, isDownloaded, startDownload, cancelDownload, resetDownloadState } = useDownload();
+    
     const [llama, setLlama] = useState<LlamaContext | null>(null);
     const llamaRef = useRef<LlamaContext | null>(null);
 
     const [melioHistory, setMelioHistory] = useState<MelioMessage[]>([]);
     const [streamingText, setStreamingText] = useState('');       
     const [isStreaming, setIsStreaming] = useState(false);        
-    const [isDownloading, setIsDownloading] = useState(false);
-    const [showDownloadPrompt, setShowDownloadPrompt] = useState(false);
     const [melioInput, setMelioInput] = useState('');
     const [isMelioThinking, setIsMelioThinking] = useState(false);
 
@@ -169,19 +173,16 @@ export default function MelioChat({ onClose, biometrics }: MelioChatProps) {
     };
 
     useEffect(() => {
-        const checkEngine = async () => {
-            const modelFile = new File(Paths.document, MODEL_FILENAME);
-            const isValid = modelFile.exists && modelFile.size > MIN_VALID_BYTES;
-            if (!isValid) {
-                if (modelFile.exists) modelFile.delete();
-                setShowDownloadPrompt(true);
-            } else {
-                bootEngine(modelFile);
+        if (isDownloaded && !llamaRef.current) {
+            bootEngine();
+        }
+        return () => { 
+            if (llamaRef.current) {
+                llamaRef.current.release(); 
+                llamaRef.current = null;
             }
         };
-        checkEngine();
-        return () => { if (llamaRef.current) llamaRef.current.release(); };
-    }, []);
+    }, [isDownloaded]);
 
     useEffect(() => {
         if (isNearBottomRef.current) {
@@ -211,37 +212,15 @@ export default function MelioChat({ onClose, biometrics }: MelioChatProps) {
         });
     };
 
-    const startDownloadAndBoot = async () => {
-        setShowDownloadPrompt(false);
-        setIsDownloading(true);
-        setMelioHistory([{
-            role: 'melio',
-            text: 'Downloading the offline neural engine (~970 MB). Please keep this screen open and stay on Wi-Fi. This only happens once.'
-        }]);
-        try {
-            const modelFile = new File(Paths.document, MODEL_FILENAME);
-            await File.downloadFileAsync(HF_MODEL_URL, modelFile);
-            setIsDownloading(false);
-            setMelioHistory([{ role: 'melio', text: 'Download complete. Starting your private engine...' }]);
-            await bootEngine(modelFile);
-        } catch (error) {
-            console.error('Download Error:', error);
-            setIsDownloading(false);
-            try { const f = new File(Paths.document, MODEL_FILENAME); if (f.exists) f.delete(); } catch (_) {}
-            setMelioHistory([{ role: 'melio', text: 'Download failed. Please check your connection and try again.' }]);
-            setShowDownloadPrompt(true);
-        }
-    };
-
-    const bootEngine = async (modelFile: File) => {
+    const bootEngine = async () => {
         setIsMelioThinking(true);
+        const modelFile = new File(Paths.document, MODEL_FILENAME);
         const rawPath = modelFile.uri.replace('file://', '');
         try {
-            const ctx = await initLlama({ model: rawPath, use_mlock: true, n_ctx: 2048, n_gpu_layers: 1 });
+            const ctx = await initLlama({ model: rawPath, use_mlock: false, n_ctx: 2048, n_gpu_layers: 1 });
             setLlama(ctx);
             llamaRef.current = ctx;
 
-            // 🚀 Melio reads physical vitals on boot
             let initialGreeting = "Hi, I'm Melio — a safe, private space just for you. Everything you share stays on this device, always.\n\nWhat's on your mind today?";
             
             if (biometrics?.meta_scores) {
@@ -271,11 +250,14 @@ export default function MelioChat({ onClose, biometrics }: MelioChatProps) {
                 {
                     text: 'Delete',
                     style: 'destructive',
-                    onPress: () => {
+                    onPress: async () => {
                         if (llama) { llama.release(); setLlama(null); llamaRef.current = null; }
-                        try { const f = new File(Paths.document, MODEL_FILENAME); if (f.exists) f.delete(); } catch (_) {}
+                        try {
+                            const modelFile = new File(Paths.document, MODEL_FILENAME);
+                            if (modelFile.exists) await modelFile.delete();
+                        } catch (_) {}
                         setMelioHistory([]);
-                        setShowDownloadPrompt(true);
+                        resetDownloadState();
                     }
                 }
             ]
@@ -288,29 +270,6 @@ export default function MelioChat({ onClose, biometrics }: MelioChatProps) {
         const userText = melioInput.trim();
         const isCrisis = detectCrisis(userText);
 
-        const isGreeting = /^(hi|hey|hello|hiya|sup|yo|good morning|good evening|good afternoon)[\s!?.]*$/i.test(userText.trim());
-        const positiveSignals = ['got the job', 'got placed', 'promoted', 'passed', 'so happy', 'excited', 'great news', 'amazing', 'i did it', 'we won', 'feeling good', 'feeling great', 'feeling happy', 'good news', 'package'];
-        const isPositive = positiveSignals.some(s => userText.toLowerCase().includes(s));
-        
-        const wordCount = userText.split(' ').length;
-        const isShort = wordCount <= 8;
-
-        // 🚀 UPGRADED: Aggressively forcing actionable advice instead of questions
-        let moodHint = isGreeting
-            ? '[SYSTEM NOTE: User is greeting you. Say hello back warmly and ask what is on their mind today.]'
-            : isPositive
-            ? '[SYSTEM NOTE: User shared good news. Celebrate with them and ask how they plan to treat themselves.]'
-            : isCrisis
-            ? '[SYSTEM NOTE: Crisis detected. Express deep compassion, immediately provide a grounding breathing exercise, and give helplines.]'
-            : isShort
-            ? '[SYSTEM NOTE: User sent a short response and seems stuck or unmotivated. DO NOT ask them how they cope. Instead, direct them to do a specific, tiny 2-minute action or mental exercise right now.]'
-            : '[SYSTEM NOTE: User shared a struggle. DO NOT give generic empathy. Guide them through a specific cognitive reframe or a practical problem-solving step.]';
-
-        // Inject active physical state into the model's awareness
-        if (biometrics?.meta_scores?.stress_index) {
-            moodHint += `\n[CURRENT VITALS: User's physical stress index is currently ${biometrics.meta_scores.stress_index}/100. Use this context implicitly.]`;
-        }
-
         const updatedHistory: MelioMessage[] = [...melioHistory, { role: 'user', text: userText }];
         setMelioHistory(updatedHistory);
         setMelioInput('');
@@ -319,12 +278,19 @@ export default function MelioChat({ onClose, biometrics }: MelioChatProps) {
         setTimeout(() => scrollToBottom(), 80);
 
         try {
-            let finalPrompt = `<|im_start|>system\n${MELIO_SYSTEM_PROMPT}\n\n${moodHint}<|im_end|>\n`;
+        
+            let finalPrompt = `<|im_start|>system\n${MELIO_SYSTEM_PROMPT}`;
+           
+            if (biometrics?.meta_scores?.stress_index && biometrics.meta_scores.stress_index > 70) {
+                finalPrompt += `\n[LATENT DEVICE DATA: The user's biometric stress index is currently very high (${biometrics.meta_scores.stress_index}/100). Keep your tone extra calming.]`;
+            }
+            finalPrompt += `<|im_end|>\n`;
             
             const bootPhrases = ['Downloading', 'Download', 'failed', 'Starting', 'engine', "stays on this device"];
+            
             const chatHistory = updatedHistory
                 .filter(m => !bootPhrases.some(p => m.text.includes(p)))
-                .slice(-6);
+                .slice(-20);
 
             for (const msg of chatHistory) {
                 finalPrompt += msg.role === 'user'
@@ -338,15 +304,14 @@ export default function MelioChat({ onClose, biometrics }: MelioChatProps) {
             setIsStreaming(true);
             setIsMelioThinking(false);
 
-            // 🚀 UPGRADED: Higher temp/predict to explain exercises properly
             await llama.completion(
                 {
                     prompt: finalPrompt,
-                    n_predict: 400,
-                    temperature: 0.65, 
+                    n_predict: 300,
+                    temperature: 0.7, 
                     top_p: 0.9,
                     top_k: 40,
-                    penalty_repeat: 1.05, 
+                    penalty_repeat: 1.1, 
                     stop: ['<|im_end|>', '<|im_start|>'],
                 },
                 (data: { token: string }) => {
@@ -380,11 +345,13 @@ export default function MelioChat({ onClose, biometrics }: MelioChatProps) {
         const hasHelpline = msg.text.includes('9152987821');
         if (hasHelpline) return (
             <TouchableOpacity activeOpacity={0.8} onPress={() => handleHelplinePress(msg.text)}>
-                <Text style={styles.bubbleText}>{msg.text}</Text>
+                {/* 🚀 Render with the bold formatter */}
+                <Text style={styles.bubbleText}>{formatMessageText(msg.text)}</Text>
                 <Text style={styles.tapToCallHint}>Tap to call a helpline</Text>
             </TouchableOpacity>
         );
-        return <Text style={styles.bubbleText}>{msg.text}</Text>;
+      
+        return <Text style={styles.bubbleText}>{formatMessageText(msg.text)}</Text>;
     };
 
     return (
@@ -406,13 +373,14 @@ export default function MelioChat({ onClose, biometrics }: MelioChatProps) {
                 <TouchableOpacity
                     onPress={deleteModelFile}
                     style={styles.backButton}
-                    disabled={isDownloading || showDownloadPrompt}
+                    disabled={isDownloading || !isDownloaded}
                 >
-                    <Ionicons name="trash-outline" size={24} color={isDownloading || showDownloadPrompt ? 'transparent' : '#C8E6C9'} />
+                    <Ionicons name="trash-outline" size={24} color={isDownloading || !isDownloaded ? 'transparent' : '#C8E6C9'} />
                 </TouchableOpacity>
             </View>
 
-            {showDownloadPrompt ? (
+            {}
+            {!isDownloaded && !isDownloading ? (
                 <View style={styles.consentContainer}>
                     <View style={styles.consentCard}>
                         <View style={styles.shieldIconWrap}>
@@ -443,24 +411,42 @@ export default function MelioChat({ onClose, biometrics }: MelioChatProps) {
                             ))}
                         </View>
 
-                        <TouchableOpacity style={styles.downloadButton} onPress={startDownloadAndBoot} activeOpacity={0.85}>
+                        <TouchableOpacity style={styles.downloadButton} onPress={startDownload} activeOpacity={0.85}>
                             <Ionicons name="cloud-download-outline" size={20} color="#FFF" style={{ marginRight: 8 }} />
                             <Text style={styles.downloadButtonText}>Download & Enable Melio</Text>
                         </TouchableOpacity>
-                        <TouchableOpacity style={styles.cancelButton} onPress={onClose}>
+                        <TouchableOpacity style={styles.cancelButtonTextWrap} onPress={onClose}>
                             <Text style={styles.cancelButtonText}>Not Right Now</Text>
                         </TouchableOpacity>
                     </View>
                 </View>
+
+      
+            ) : isDownloading ? (
+                <View style={styles.consentContainer}>
+                    <View style={styles.consentCard}>
+                        <Text style={styles.consentTitle}>Downloading Melio</Text>
+                        
+                        {/* The Loader & Cancel Button Layout */}
+                        <View style={{ flexDirection: 'row', alignItems: 'center', marginVertical: 25, backgroundColor: '#E8F5E9', padding: 15, borderRadius: 16, width: '100%', justifyContent: 'space-between' }}>
+                            <View style={{ flexDirection: 'row', alignItems: 'center' }}>
+                                <ActivityIndicator size="large" color="#2E7D32" style={{ marginRight: 15 }} />
+                                <Text style={{ fontFamily: 'Ubuntu_500Medium', color: '#2E7D32', fontSize: 16 }}>Downloading Engine...</Text>
+                            </View>
+                            <TouchableOpacity onPress={cancelDownload} style={{ padding: 5 }}>
+                                <Ionicons name="close-circle" size={28} color="#D84361" />
+                            </TouchableOpacity>
+                        </View>
+                        
+                        <Text style={styles.consentBody}>
+                            You can leave this screen, it will silently continue in the background!
+                        </Text>
+                    </View>
+                </View>
+
+         
             ) : (
                 <>
-                    {isDownloading && (
-                        <View style={styles.downloadBanner}>
-                            <ActivityIndicator size="small" color="#2E7D32" style={{ marginRight: 8 }} />
-                            <Text style={styles.downloadBannerText}>Downloading — please stay on Wi-Fi</Text>
-                        </View>
-                    )}
-
                     <ScrollView
                         ref={melioScrollRef}
                         style={styles.chatArea}
@@ -498,7 +484,8 @@ export default function MelioChat({ onClose, biometrics }: MelioChatProps) {
                             <View style={styles.messageRow}>
                                 <Text style={styles.senderLabel}>Melio</Text>
                                 <View style={styles.melioBubble}>
-                                    <Text style={styles.bubbleText}>{streamingText}</Text>
+                                    {/* 🚀 Render streaming text with the bold formatter */}
+                                    <Text style={styles.bubbleText}>{formatMessageText(streamingText)}</Text>
                                     <Text style={styles.cursor}>▋</Text>
                                 </View>
                             </View>
@@ -512,7 +499,7 @@ export default function MelioChat({ onClose, biometrics }: MelioChatProps) {
                             onChangeText={setMelioInput}
                             placeholder="Share what's on your mind..."
                             placeholderTextColor="#A09395"
-                            editable={!isMelioThinking && !isDownloading && !isStreaming && !!llama}
+                            editable={!isMelioThinking && !isStreaming && !!llama}
                             multiline
                             underlineColorAndroid="transparent"
                             onFocus={() => setTimeout(() => scrollToBottom(), 300)}
@@ -524,7 +511,7 @@ export default function MelioChat({ onClose, biometrics }: MelioChatProps) {
                                 { backgroundColor: melioInput.trim() && llama && !isStreaming ? '#2E7D32' : '#A5C8A7' }
                             ]}
                             onPress={sendMelioMessage}
-                            disabled={isMelioThinking || isDownloading || isStreaming || !llama || !melioInput.trim()}
+                            disabled={isMelioThinking || isStreaming || !llama || !melioInput.trim()}
                         >
                             <Ionicons name="send" size={18} color="#FFF" />
                         </TouchableOpacity>
@@ -535,9 +522,7 @@ export default function MelioChat({ onClose, biometrics }: MelioChatProps) {
     );
 }
 
-// ─────────────────────────────────────────────
-// Styles
-// ─────────────────────────────────────────────
+
 const styles = StyleSheet.create({
     featureHeader: {
         width: '100%', flexDirection: 'row', alignItems: 'center',
@@ -624,14 +609,9 @@ const styles = StyleSheet.create({
         shadowColor: '#1B5E20', shadowOffset: { width: 0, height: 6 }, shadowOpacity: 0.25, shadowRadius: 12,
     },
     downloadButtonText: { fontFamily: 'Ubuntu_500Medium', color: '#FFF', fontSize: 16 },
-    cancelButton: { marginTop: 18, paddingVertical: 8, width: '100%', alignItems: 'center' },
+    cancelButtonTextWrap: { marginTop: 18, paddingVertical: 8, width: '100%', alignItems: 'center' },
     cancelButtonText: { fontFamily: 'Ubuntu_500Medium', color: '#A09395', fontSize: 15 },
 
-    downloadBanner: {
-        backgroundColor: '#E8F5E9', padding: 10, flexDirection: 'row',
-        alignItems: 'center', justifyContent: 'center',
-    },
-    downloadBannerText: { color: '#2E7D32', fontFamily: 'Ubuntu_500Medium', fontSize: 13 },
     chatArea: { flex: 1, width: '100%', paddingHorizontal: 15, paddingTop: 12, backgroundColor: '#F5F9F5' },
     messageRow: { marginBottom: 14 },
     senderLabel: {

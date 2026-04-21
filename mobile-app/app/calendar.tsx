@@ -7,13 +7,11 @@ import { useFonts, Ubuntu_400Regular, Ubuntu_500Medium } from '@expo-google-font
 import { SourceSerifPro_700Bold } from '@expo-google-fonts/source-serif-pro';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 
-const IP_ADDRESS = "192.168.1.3"
+const IP_ADDRESS = "https://purposely-ozone-enjoying.ngrok-free.dev"
 
-// 🚀 NEW: Helper function to format the date string beautifully
 const formatBeautifulDate = (dateString: string) => {
     if (!dateString) return "";
-    
-    // Split the raw string to avoid timezone shifting issues that happen with new Date(dateString)
+  
     const [yearStr, monthStr, dayStr] = dateString.split('-');
     const year = parseInt(yearStr, 10);
     const monthIndex = parseInt(monthStr, 10) - 1;
@@ -24,7 +22,6 @@ const formatBeautifulDate = (dateString: string) => {
         "July", "August", "September", "October", "November", "December"
     ];
 
-    // Determine the correct ordinal suffix (st, nd, rd, th)
     const getOrdinalSuffix = (n: number) => {
         const s = ["th", "st", "nd", "rd"];
         const v = n % 100;
@@ -53,7 +50,7 @@ export default function CalendarScreen() {
         const controller = new AbortController();
         const timeoutId = setTimeout(() => controller.abort(), 5000);
 
-        const response = await fetch(`http://${IP_ADDRESS}:8000/api/calendar`, {
+        const response = await fetch(`${IP_ADDRESS}/api/calendar`, {
           headers: { 'Authorization': `Bearer ${token}` },
           signal: controller.signal
         });
@@ -101,7 +98,7 @@ export default function CalendarScreen() {
       const controller = new AbortController();
       const timeoutId = setTimeout(() => controller.abort(), 5000);
 
-      const response = await fetch(`http://${IP_ADDRESS}:8000/api/scan/${dateString}`, {
+      const response = await fetch(`${IP_ADDRESS}/api/scan/${dateString}`, {
           headers: { 'Authorization': `Bearer ${token}` },
           signal: controller.signal
       });
@@ -128,7 +125,7 @@ export default function CalendarScreen() {
   return (
     <SafeAreaView style={styles.container}>
       
-      {/* ✅ Clean, Centered Header mirroring the Profile Screen */}
+      {}
       <View style={styles.headerRow}>
           <TouchableOpacity onPress={() => router.back()} style={styles.backBtn}>
             <Ionicons name="arrow-back" size={26} color="#D84361" />
@@ -169,7 +166,7 @@ export default function CalendarScreen() {
 
         {selectedDateData && (
             <Animated.View style={styles.contextBox}>
-                {/* 🚀 FIXED: Passed the raw date string through our new formatter */}
+                {}
                 <Text style={styles.contextDate}>{formatBeautifulDate(selectedDateData.date)}</Text>
                 
                 {selectedDateData.empty ? (
@@ -187,8 +184,7 @@ export default function CalendarScreen() {
 
 const styles = StyleSheet.create({
   container: { flex: 1, backgroundColor: '#F4F2F1', paddingTop: Platform.OS === 'android' ? StatusBar.currentHeight! + 10 : 0 },
-  
-  // ✅ New Header Styles applied
+ 
   headerRow: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', paddingHorizontal: 20, paddingVertical: 15, marginBottom: 10 },
   backBtn: { padding: 5 },
   headerTitle: { fontFamily: 'SourceSerifPro_700Bold', fontSize: 32, color: '#D84361', letterSpacing: 0.5 },

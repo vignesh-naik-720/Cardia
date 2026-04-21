@@ -83,7 +83,7 @@ export default function FoodScanner({ onClose, onOpenChat, device, IP_ADDRESS }:
             formData.append('image', { uri: uri, name: 'food.jpg', type: 'image/jpeg' } as any);
             
             const token = await AsyncStorage.getItem('userToken');
-            const response = await fetch(`http://${IP_ADDRESS}:8000/api/analyze_food`, {
+            const response = await fetch(`${IP_ADDRESS}/api/analyze_food`, {
                 method: 'POST', 
                 body: formData, 
                 headers: { 'Content-Type': 'multipart/form-data', 'Authorization': `Bearer ${token}` },
@@ -132,14 +132,8 @@ export default function FoodScanner({ onClose, onOpenChat, device, IP_ADDRESS }:
 
     return (
         <View style={{flex: 1, width: '100%', backgroundColor: '#000'}}>
-            <View style={[styles.featureHeader, {backgroundColor: '#000', borderBottomWidth: 0}]}>
-                <TouchableOpacity onPress={onClose} style={styles.backButton}>
-                    <Ionicons name="arrow-back" size={28} color="#FFF" />
-                </TouchableOpacity>
-                <Text style={[styles.headerTitle, {color: '#FFF'}]}>Dietary Vision</Text>
-                <View style={{width: 28}} />
-            </View>
-
+            
+            {/* 1. MAIN CAMERA VIEW */}
             <View style={{flex: 1, position: 'relative'}}>
                 {capturedImageUri ? (
                     <>
@@ -162,18 +156,13 @@ export default function FoodScanner({ onClose, onOpenChat, device, IP_ADDRESS }:
                             const verdictBorderColor = getVerdictColor(item.verdict, 1.0); 
 
                             return (
-                                // 🚀 FIXED: The anchor point is just a 0x0 coordinate. 
-                                // pointerEvents="box-none" ensures the container itself can't be clicked.
                                 <View key={item.id || index.toString()} style={[styles.arAnchorPoint, { top, left }]} pointerEvents="box-none">
-                                    
-                                    {/* 🚀 Rings are isolated here and ignore touches entirely */}
                                     <View style={styles.ringContainer} pointerEvents="none">
                                         <ConcentricRing color={verdictBorderColor} delay={0} />
                                         <ConcentricRing color={verdictBorderColor} delay={800} />
                                         <ConcentricRing color={verdictBorderColor} delay={1600} />
                                     </View>
 
-                                    {/* 🚀 The actual button perfectly wraps ONLY the Map Pin */}
                                     <TouchableOpacity 
                                         style={styles.touchablePin}
                                         onPress={() => setSelectedFood(item)}
@@ -209,6 +198,7 @@ export default function FoodScanner({ onClose, onOpenChat, device, IP_ADDRESS }:
                 )}
             </View>
 
+            {/* 2. VISION CONTROLS */}
             <View style={styles.visionControls}>
                 {!capturedImageUri ? (
                     <View style={styles.actionRow}>
@@ -234,6 +224,16 @@ export default function FoodScanner({ onClose, onOpenChat, device, IP_ADDRESS }:
                 )}
             </View>
 
+            {/* 3. FLOATING HEADER (Moved to bottom of JSX so it paints OVER the camera on Android) */}
+            <View style={[styles.featureHeader, {backgroundColor: 'rgba(0,0,0,0.5)', borderBottomWidth: 0}]}>
+                <TouchableOpacity onPress={onClose} style={styles.backButton}>
+                    <Ionicons name="arrow-back" size={28} color="#FFF" />
+                </TouchableOpacity>
+                <Text style={[styles.headerTitle, {color: '#FFF'}]}>Dietary Vision</Text>
+                <View style={{width: 28}} />
+            </View>
+
+            {/* 4. DETAILS MODAL */}
             <Modal visible={!!selectedFood} transparent animationType="slide">
                 <View style={styles.modalOverlay}>
                     <View style={styles.modalContent}>
@@ -280,77 +280,43 @@ export default function FoodScanner({ onClose, onOpenChat, device, IP_ADDRESS }:
 // 🚀 Exact dimensions of the marker
 const BLOB_DIAMETER = 44;
 const TRIANGLE_HEIGHT = 14;
-const TOTAL_ANCHOR_OFFSET_Y = BLOB_DIAMETER + TRIANGLE_HEIGHT; // 58
-const TOTAL_ANCHOR_OFFSET_X = BLOB_DIAMETER / 2; // 22
+const TOTAL_ANCHOR_OFFSET_Y = BLOB_DIAMETER + TRIANGLE_HEIGHT; 
+const TOTAL_ANCHOR_OFFSET_X = BLOB_DIAMETER / 2; 
 
 const styles = StyleSheet.create({
-    featureHeader: { width: '100%', flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', paddingHorizontal: 20, paddingVertical: 15 },
+    // 🚀 CRITICAL FIX: Absolute positioning, zIndex, and elevation guarantee it floats above Android SurfaceView
+    featureHeader: { 
+        position: 'absolute', 
+        top: 0, 
+        left: 0, 
+        right: 0, 
+        zIndex: 999, 
+        elevation: 10,
+        width: '100%', 
+        flexDirection: 'row', 
+        alignItems: 'center', 
+        justifyContent: 'space-between', 
+        paddingHorizontal: 20, 
+        paddingVertical: 15,
+        paddingTop: Platform.OS === 'ios' ? 50 : 30, // Safe area padding since it floats
+    },
     backButton: { padding: 5 },
     headerTitle: { fontFamily: 'SourceSerifPro_700Bold', fontSize: 24 },
     
-    visionControls: { position: 'absolute', bottom: 40, width: '100%', alignItems: 'center' },
+    visionControls: { position: 'absolute', bottom: 40, width: '100%', alignItems: 'center', zIndex: 100, elevation: 5 },
     actionRow: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', width: '65%' },
     
     captureButton: { width: 80, height: 80, borderRadius: 40, backgroundColor: '#FFF5F5', justifyContent: 'center', alignItems: 'center', borderWidth: 4, borderColor: '#D84361', shadowColor: '#000', shadowOffset: { width: 0, height: 4 }, shadowOpacity: 0.3, shadowRadius: 5 },
     sideButton: { width: 54, height: 54, borderRadius: 27, backgroundColor: 'rgba(255, 255, 255, 0.2)', justifyContent: 'center', alignItems: 'center', borderWidth: 1, borderColor: 'rgba(255, 255, 255, 0.4)' },
     
-    // 🚀 NEW: Clean Layout Separation
-    arAnchorPoint: {
-        position: 'absolute',
-        width: 0,
-        height: 0,
-        zIndex: 10,
-    },
-    ringContainer: {
-        position: 'absolute',
-        // Centers the ripples perfectly behind the circular part of the pin
-        top: -(TRIANGLE_HEIGHT + BLOB_DIAMETER), 
-        left: -TOTAL_ANCHOR_OFFSET_X, 
-        width: BLOB_DIAMETER,
-        height: BLOB_DIAMETER,
-        justifyContent: 'center',
-        alignItems: 'center',
-    },
-    concentricRing: {
-        position: 'absolute',
-        width: BLOB_DIAMETER,
-        height: BLOB_DIAMETER,
-        borderRadius: BLOB_DIAMETER / 2,
-        borderWidth: 2,
-        backgroundColor: 'transparent',
-    },
-    touchablePin: {
-        position: 'absolute',
-        width: BLOB_DIAMETER,
-        height: TOTAL_ANCHOR_OFFSET_Y, // Extends all the way down to the tip
-        alignItems: 'center',
-        left: -TOTAL_ANCHOR_OFFSET_X, // Shifts left by half diameter to center
-        top: -TOTAL_ANCHOR_OFFSET_Y,  // Shifts up so bottom tip lands on 0,0
-    },
-    arBlobMainCircle: {
-        width: BLOB_DIAMETER,
-        height: BLOB_DIAMETER,
-        borderRadius: BLOB_DIAMETER / 2,
-        borderWidth: 3,
-        borderColor: '#FFFFFF',
-        justifyContent: 'center',
-        alignItems: 'center',
-        shadowColor: '#000', shadowOffset: { width: 0, height: 4 }, shadowOpacity: 0.4, shadowRadius: 6, elevation: 8
-    },
+    arAnchorPoint: { position: 'absolute', width: 0, height: 0, zIndex: 10 },
+    ringContainer: { position: 'absolute', top: -(TRIANGLE_HEIGHT + BLOB_DIAMETER), left: -TOTAL_ANCHOR_OFFSET_X, width: BLOB_DIAMETER, height: BLOB_DIAMETER, justifyContent: 'center', alignItems: 'center' },
+    concentricRing: { position: 'absolute', width: BLOB_DIAMETER, height: BLOB_DIAMETER, borderRadius: BLOB_DIAMETER / 2, borderWidth: 2, backgroundColor: 'transparent' },
+    touchablePin: { position: 'absolute', width: BLOB_DIAMETER, height: TOTAL_ANCHOR_OFFSET_Y, alignItems: 'center', left: -TOTAL_ANCHOR_OFFSET_X, top: -TOTAL_ANCHOR_OFFSET_Y },
+    
+    arBlobMainCircle: { width: BLOB_DIAMETER, height: BLOB_DIAMETER, borderRadius: BLOB_DIAMETER / 2, borderWidth: 3, borderColor: '#FFFFFF', justifyContent: 'center', alignItems: 'center', shadowColor: '#000', shadowOffset: { width: 0, height: 4 }, shadowOpacity: 0.4, shadowRadius: 6, elevation: 8 },
     arBlobInner: { width: 14, height: 14, borderRadius: 7, backgroundColor: '#FFFFFF', opacity: 0.85 },
-    arPointerTriangle: {
-        width: 0, 
-        height: 0,
-        backgroundColor: 'transparent',
-        borderStyle: 'solid',
-        borderLeftWidth: 8, 
-        borderRightWidth: 8,
-        borderTopWidth: TRIANGLE_HEIGHT, 
-        borderLeftColor: 'transparent', 
-        borderRightColor: 'transparent',
-        marginTop: -3, // Overlaps the circle border seamlessly
-        shadowColor: '#000', shadowOffset: { width: 0, height: 4 }, shadowOpacity: 0.3, shadowRadius: 4, elevation: 4
-    },
+    arPointerTriangle: { width: 0, height: 0, backgroundColor: 'transparent', borderStyle: 'solid', borderLeftWidth: 8, borderRightWidth: 8, borderTopWidth: TRIANGLE_HEIGHT, borderLeftColor: 'transparent', borderRightColor: 'transparent', marginTop: -3, shadowColor: '#000', shadowOffset: { width: 0, height: 4 }, shadowOpacity: 0.3, shadowRadius: 4, elevation: 4 },
 
     scanningOverlay: { ...StyleSheet.absoluteFillObject, backgroundColor: 'rgba(0,0,0,0.7)', justifyContent: 'center', alignItems: 'center' },
     scanningText: { fontFamily: 'Ubuntu_500Medium', color: '#FFF', marginTop: 15, fontSize: 16 },

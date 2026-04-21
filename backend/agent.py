@@ -1,128 +1,79 @@
 import os
 import time
-import urllib.request
-import urllib.parse
 import json
+import asyncio
+import httpx
+import urllib.parse
 from dotenv import load_dotenv
 from typing import TypedDict, Literal
 from pydantic import BaseModel, Field
 from langgraph.graph import StateGraph, START, END
+
+# 🚀 PostgreSQL Saver and Connection Pool
+from langgraph.checkpoint.postgres.aio import AsyncPostgresSaver
+from psycopg_pool import AsyncConnectionPool
+
 from presidio_analyzer import AnalyzerEngine
 from presidio_anonymizer import AnonymizerEngine
 from langchain_groq import ChatGroq
 from langchain_core.messages import HumanMessage, SystemMessage
-from vector_store import search_similar_abstracts, save_abstract 
+from langchain_tavily import TavilySearch
+
+# 🚀 Unified LRU Cache Manager
+from cache_manager import get_cached_search, save_to_cache
 
 load_dotenv()
 
-# ==========================================
-# 🧠 AI MODEL CONFIGURATION
-# Switch these variables to upgrade/downgrade the brain!
-# Example: "llama-3.3-70b-versatile" or "llama-3.1-8b-instant"
-# ==========================================
-TEXT_MODEL = "llama-3.1-8b-instant" 
+# --- MODEL DEFINITIONS ---
+TEXT_MODEL = "llama-3.3-70b-versatile" 
 VISION_MODEL = "meta-llama/llama-4-scout-17b-16e-instruct"
-# ==========================================
+SUPERVISOR_MODEL = "llama-3.3-70b-versatile"  
 
+# --- TOOL INITIALIZATION ---
 analyzer = AnalyzerEngine()
 anonymizer = AnonymizerEngine()
 
+tavily_tool = TavilySearch(
+    max_results=2,
+    include_domains=[
+        "mayoclinic.org", "clevelandclinic.org", "heart.org", 
+        "who.int", "cdc.gov", "hsph.harvard.edu"
+    ]
+)
+
+# --- STATE & SCHEMAS ---
 class AgentState(TypedDict):
     original_text: str
     biometrics: dict
+    user_profile: str  # 🚀 ADDED: Now the graph can hold your medical/dietary profile
     clinical_insights: str
+    user_facing_insights: str
     anonymized_text: str
     pii_mapping: dict
-    needs_research: bool
-    reasoning: str
+    routing_decision: str 
     research_query: str
+    raw_research_results: str 
     research_results: str
-    image_data: str # 🚀 Base64 image state
+    image_data: str 
     draft_response: str
     retry_count: int
-    search_retry_count: int
     evaluation_feedback: str
     is_accurate: bool
     response: str
-    latency: dict 
-    tokens: dict
 
-class RouterDecision(BaseModel):
-    needs_research: bool = Field(description="True ONLY if the query requires medical facts. False for casual chat.")
-    reasoning: str = Field(description="Short explanation of decision.")
-    search_query: str = Field(description="Specific PubMed search query if needs_research is True.")
-
-class QueryReformulation(BaseModel):
-    new_query: str = Field(description="A broader medical search query using standard MeSH terms.")
+class SupervisorDecision(BaseModel):
+    route: Literal["clinical", "diet", "lifestyle", "general"] = Field(description="Clinical for biometrics/symptoms. Diet for food/nutrition. Lifestyle for habits. General for greetings/chit-chat.")
+    search_query: str = Field(description="2-3 word search query based on context. Leave blank if general chat.")
 
 class EvaluatorDecision(BaseModel):
-    is_accurate: bool = Field(description="True ONLY if draft is safe and perfectly grounded in research.")
-    feedback: str = Field(description="Instructions to fix hallucinations.")
+    is_accurate: bool = Field(description="True ONLY if draft is safe, helpful, and perfectly grounded in research.")
+    feedback: str = Field(description="Instructions to fix hallucinations or tone issues.")
 
-def clinical_heuristics_node(state: AgentState):
-    print(f"\n{'='*70}\n🩺 [NODE 0: CLINICAL HEURISTICS ENGINE]")
-    bio = state.get("biometrics", {})
-    if not bio:
-        print("   -> No real-time biometrics provided.")
-        return {"clinical_insights": "No real-time biometrics provided."}
+# --- GRAPH NODES ---
 
-    insights = []
-    metrics = bio.get("metrics", bio) 
-    meta_scores = bio.get("meta_scores", {})
-    
-    hr = metrics.get("hr_bpm", metrics.get("hr", 0))
-    sdnn = metrics.get("sdnn_ms", metrics.get("sdnn", 0))
-    rmssd = metrics.get("rmssd_ms", metrics.get("rmssd", 0))
-    stress = metrics.get("raw_stress_index", metrics.get("stress_index", 0))
-
-    if hr > 0:
-        if hr < 50: insights.append(f"Heart Rate is unusually low ({hr} BPM), indicating either high athletic conditioning or bradycardia.")
-        elif 50 <= hr <= 85: insights.append(f"Heart Rate is in an optimal resting range ({hr} BPM).")
-        elif 85 < hr <= 100: insights.append(f"Heart Rate is high-normal ({hr} BPM), suggesting mild arousal, caffeine, or recent movement.")
-        else: insights.append(f"Heart Rate is elevated ({hr} BPM), indicating acute physical or psychological stress.")
-
-    if sdnn > 0:
-        if sdnn < 30: insights.append("SDNN is critically low, indicating severely compromised autonomic function or systemic fatigue.")
-        elif 30 <= sdnn <= 50: insights.append("SDNN is below average, showing reduced ability to cope with immediate stressors.")
-        elif 50 < sdnn <= 100: insights.append("SDNN is normal, indicating a healthy, adaptable autonomic nervous system.")
-        else: insights.append("SDNN is high, indicating excellent autonomic adaptability and cardiovascular health.")
-
-    if rmssd > 0:
-        if rmssd < 20: insights.append("RMSSD is critically low. The parasympathetic system is suppressed, indicating 'fight-or-flight' dominance.")
-        elif 20 <= rmssd <= 40: insights.append("RMSSD is sub-optimal, showing mild sympathetic dominance and lower recovery state.")
-        elif 40 < rmssd <= 70: insights.append("RMSSD is good, indicating active parasympathetic recovery and a well-rested state.")
-        else: insights.append("RMSSD is highly robust. The user is in a state of deep recovery with excellent vagal tone.")
-
-    if stress > 0:
-        if stress < 50: insights.append("Baevsky Stress Index is very low (<50). The user is deeply relaxed.")
-        elif 50 <= stress <= 150: insights.append("Baevsky Stress Index is normal (50-150). The user is experiencing standard waking physiological tone.")
-        elif 150 < stress <= 500: insights.append("Baevsky Stress Index is high (150-500). The user is under significant autonomic tension.")
-        else: insights.append("Baevsky Stress Index is dangerously high (>500). The user is experiencing severe acute stress or physical exhaustion.")
-
-    focus = meta_scores.get("focus")
-    if focus is not None:
-        if focus < 30: insights.append("Cognitive focus state is severely depleted. The user is likely highly distracted or experiencing brain fog.")
-        elif 30 <= focus <= 60: insights.append("Cognitive focus state is sub-optimal. The user's attention is drifting.")
-        elif 60 < focus <= 80: insights.append("Cognitive focus state is good. The user is engaged and present.")
-        else: insights.append("Cognitive focus state is excellent. The user is hyper-focused and highly alert.")
-        
-    energy = meta_scores.get("energy")
-    if energy is not None:
-        if energy < 30: insights.append("Physical energy capacity is critically low. The user requires rest.")
-        elif 30 <= energy <= 60: insights.append("Physical energy capacity is moderate. The user is mildly fatigued.")
-        elif 60 < energy <= 80: insights.append("Physical energy capacity is solid. The user is capable of normal daily exertion.")
-        else: insights.append("Physical energy capacity is peaked. The user is fully recovered and energized.")
-
-    final_insight = " ".join(insights)
-    print(f"   -> Extracted State: {final_insight}")
-    
-    return {"clinical_insights": final_insight}
-
-def scrub_pii_node(state: AgentState):
-    start_time = time.time()
+async def safety_gate_node(state: AgentState):
+    print(f"\n🛡️ [NODE 1: ASYNC SAFETY & PII GATE]")
     text = state["original_text"]
-    
-    print(f"\n🛡️ [NODE 1: PII SCRUBBER]")
     
     all_supported_entities = analyzer.get_supported_entities(language='en')
     ENTITIES_TO_KEEP = ["LOCATION", "DATE_TIME", "NRP", "URL"]
@@ -130,232 +81,358 @@ def scrub_pii_node(state: AgentState):
     
     results = analyzer.analyze(text=text, entities=TARGET_ENTITIES, language='en')
     mapping = {f"<{res.entity_type}>": text[res.start:res.end] for res in results}
-        
     anonymized_result = anonymizer.anonymize(text=text, analyzer_results=results)
-    latency = round(time.time() - start_time, 3)
     
-    return {
-        "anonymized_text": anonymized_result.text, 
-        "pii_mapping": mapping,
-        "retry_count": 0,            
-        "search_retry_count": 0,
-        "evaluation_feedback": "",    
-        "latency": {"scrub_node": latency},
-        "tokens": {"total": 0} 
-    }
-
-def reason_and_route_node(state: AgentState):
-    print(f"\n🧠 [NODE 2: REASON & ROUTE]")
-    
-    llm = ChatGroq(model=TEXT_MODEL, temperature=0)
-    structured_llm = llm.with_structured_output(RouterDecision)
-    
-    full_text = state['anonymized_text']
-    user_question = full_text.split("User Message:")[-1].strip() if "User Message:" in full_text else full_text.strip()
-    
-    # Extract the recent chat history to give the Router context
-    history_part = "None"
-    if "Recent Chat History:" in full_text and "[END SYSTEM STATE]" in full_text:
-        history_part = full_text.split("Recent Chat History:")[1].split("[END SYSTEM STATE]")[0].strip()
-    
-    prompt = f"""Analyze the user's latest message in the context of the recent conversation. 
-    You MUST set 'needs_research' to true (boolean) for ANY question involving:
-    1. Medical symptoms or conditions.
-    2. Dietary choices, food interactions, or digestion.
-    3. Exercise, sleep, or physical physiology.
-    
-    Recent Conversation Context:
-    {history_part}
-    
-    User's Latest Message: {user_question}
-    
-    If true, provide a 2-3 word PubMed query based on the context (e.g., if they say "is it safe?", figure out what "it" is from the context).
-    If the user is just saying "yes", "thanks", or asking for simple recipes/suggestions, set needs_research to false (boolean).
-    """
-    
-    decision = structured_llm.invoke([HumanMessage(content=prompt)])
-    print(f"   -> Needs Research?: {decision.needs_research}")
-    if decision.needs_research:
-        print(f"   -> Query: '{decision.search_query}'")
-    
-    return {
-        "needs_research": decision.needs_research,
-        "reasoning": decision.reasoning,
-        "research_query": decision.search_query
-    }
-
-def check_vector_cache_node(state: AgentState):
-    print(f"\n⚡ [NODE 2b: VECTOR CACHE CHECK]")
-    full_text = state["anonymized_text"] 
-    user_question = full_text.split("User Message:")[-1].strip() if "User Message:" in full_text else full_text.strip()
-    
-    cached_data = search_similar_abstracts(user_question)
-    
-    if cached_data:
-        print(f"   -> 🟢 Cache Hit! Found previous research for similar query.")
-        return {"research_results": cached_data}
+    lower_text = anonymized_result.text.lower()
+    crisis_keywords = ["suicide", "kill myself", "heart attack right now", "chest pain crushing", "stroke"]
+    if any(keyword in lower_text for keyword in crisis_keywords):
+        return {"anonymized_text": anonymized_result.text, "pii_mapping": mapping, "routing_decision": "safe_escalate"}
         
-    print("   -> 🔴 Cache Miss. Proceeding to PubMed.")
-    return {}
+    return {"anonymized_text": anonymized_result.text, "pii_mapping": mapping}
 
-def pubmed_research_node(state: AgentState):
-    start_time = time.time()
-    query = state["research_query"]
-    attempt_num = state.get("search_retry_count", 0) + 1
-    print(f"\n📚 [NODE 3: NATIVE PUBMED API (Attempt {attempt_num})]")
+async def clinical_heuristics_node(state: AgentState):
+    print(f"\n🩺 [NODE 2: QUALITATIVE CLINICAL HEURISTICS ENGINE]")
+    bio = state.get("biometrics", {})
+    if not bio: 
+        return {
+            "clinical_insights": "No real-time biometrics provided. Rely strictly on the user's text.",
+            "user_facing_insights": "No biometric scan recorded for this session."
+        }
+
+    metrics = bio.get("metrics", {}) 
+    meta = bio.get("meta_scores", {})
+
+    hr = metrics.get("hr_bpm", 0)
+    stress = metrics.get("raw_stress_index", 0)
+    rmssd = metrics.get("rmssd_ms", 0)
+    sdnn = metrics.get("sdnn_ms", 0)
     
-    try:
-        search_url = "https://eutils.ncbi.nlm.nih.gov/entrez/eutils/esearch.fcgi"
-        params = urllib.parse.urlencode({"db": "pubmed", "term": query, "retmode": "json", "retmax": 3})
-        
-        with urllib.request.urlopen(f"{search_url}?{params}", timeout=10) as response:
-            search_data = json.loads(response.read().decode())
-            pmids = search_data.get("esearchresult", {}).get("idlist", [])
-        
-        if not pmids:
-            research_data = "**Total Found:** 0"
-        else:
-            fetch_url = "https://eutils.ncbi.nlm.nih.gov/entrez/eutils/efetch.fcgi"
-            fetch_params = urllib.parse.urlencode({
-                "db": "pubmed", "id": ",".join(pmids), "retmode": "text", "rettype": "abstract"
-            })
+    energy = meta.get("energy", 0)
+    focus = meta.get("focus", 0)
+
+    insights = []
+    ui_insights = [] # 🚀 NEW: The UI-formatted list
+
+    if hr > 0:
+        if hr < 50: 
+            hr_context = "unusually low (bradycardia)"
+            ui_context = "unusually low"
+        elif 50 <= hr <= 85: 
+            hr_context = "in an optimal resting range"
+            ui_context = "in an optimal resting range"
+        elif 85 < hr <= 100: 
+            hr_context = "slightly elevated"
+            ui_context = "slightly elevated"
+        else: 
+            hr_context = "highly elevated (tachycardia)"
+            ui_context = "highly elevated"
             
-            with urllib.request.urlopen(f"{fetch_url}?{fetch_params}", timeout=15) as fetch_response:
-                research_data = fetch_response.read().decode('utf-8')
-                
-                full_text = state["anonymized_text"]
-                user_question = full_text.split("User Message:")[-1].strip() if "User Message:" in full_text else full_text.strip()
-                save_abstract(user_question, research_data)
-                
-                print("\n" + "="*70)
-                print("📑 [GROUND TRUTH: PUBMED PAPERS EXTRACTED]")
-                print("="*70)
-                print(f"{str(research_data)[:1000]}\n... [TRUNCATED FOR TERMINAL] ...")
-                print("="*70 + "\n")
-                
-    except Exception as e:
-        print(f"   -> 🚨 NATIVE API CRASH DETAILS: {e}")
-        research_data = "**Total Found:** 0"
+        insights.append(f"The user's heart rate is currently {hr_context}.")
+        ui_insights.append(f"❤️ **Heart Rate:** Your heart rate is currently {ui_context} at {int(hr)} bpm.")
 
-    current_latency = state.get("latency", {})
-    current_latency["pubmed_node"] = current_latency.get("pubmed_node", 0) + (time.time() - start_time)
-    
-    return {"research_results": research_data, "latency": current_latency}
+    if rmssd > 0:
+        if rmssd < 20: 
+            hrv_context = "very low parasympathetic activity, suggesting physical or mental exhaustion."
+            ui_hrv = "very low, suggesting you might be physically or mentally exhausted right now."
+        elif 20 <= rmssd <= 50: 
+            hrv_context = "moderate recovery and a balanced autonomic tone."
+            ui_hrv = "showing moderate recovery and a healthy balance."
+        else: 
+            hrv_context = "excellent vagal tone, high readiness, and deep relaxation."
+            ui_hrv = "showing excellent recovery, high readiness, and deep relaxation."
+            
+        insights.append(f"Their Heart Rate Variability indicates {hrv_context}")
+        ui_insights.append(f"🔋 **Recovery (HRV):** Your variability is {ui_hrv}")
 
-def rephrase_query_node(state: AgentState):
-    print(f"\n💡 [NODE 3b: QUERY REFORMULATION]")
-    llm = ChatGroq(model=TEXT_MODEL, temperature=0)
-    structured_llm = llm.with_structured_output(QueryReformulation)
-    
-    full_text = state['anonymized_text']
-    user_question = full_text.split("User Message:")[-1].strip() if "User Message:" in full_text else full_text.strip()
-    
-    prompt = f"""The previous PubMed query '{state['research_query']}' returned 0 results. 
-    User is asking about: {user_question}
-    Generate a DIFFERENT, BROADER 2-3 word medical query."""
-    
-    decision = structured_llm.invoke([HumanMessage(content=prompt)])
-    print(f"   -> New Query: '{decision.new_query}'")
-    
-    return {"research_query": decision.new_query, "search_retry_count": state.get("search_retry_count", 0) + 1}
+    if stress > 0:
+        if stress < 50: 
+            stress_context = "deep relaxation and minimal central nervous system load."
+            ui_stress = "deep relaxation with minimal nervous system load."
+        elif 50 <= stress <= 150: 
+            stress_context = "a normal, highly adaptive stress response."
+            ui_stress = "a normal, highly adaptive response to your day."
+        else: 
+            stress_context = "significant autonomic tension and high sympathetic dominance."
+            ui_stress = "significant tension. Take a moment to breathe and reset."
+            
+        insights.append(f"The Baevsky Stress Index reflects {stress_context}")
+        ui_insights.append(f"🧘 **Stress Index:** Your stress levels reflect {ui_stress}")
+        
+    if sdnn > 0:
+        if sdnn < 30: 
+            sdnn_context = "restricted overall autonomic regulation."
+            ui_sdnn = "restricted overall regulation."
+        elif 30 <= sdnn <= 100: 
+            sdnn_context = "healthy, stable overall autonomic regulation."
+            ui_sdnn = "healthy, stable overall regulation."
+        else: 
+            sdnn_context = "highly flexible overall autonomic regulation."
+            ui_sdnn = "highly flexible overall regulation."
+            
+        insights.append(f"They are showing {sdnn_context}")
+        ui_insights.append(f"⚖️ **Autonomic Balance:** You are showing {ui_sdnn}")
 
-def generate_response_node(state: AgentState):
-    attempt_num = state.get("retry_count", 0) + 1
-    print(f"\n✍️ [NODE 4: LLM GENERATOR (Attempt {attempt_num})]")
+    if energy > 0 or focus > 0:
+        energy_level = "high" if energy > 70 else "moderate" if energy > 40 else "depleted"
+        focus_level = "sharp" if focus > 70 else "moderate" if focus > 40 else "scattered"
+        
+        insights.append(f"System meta-analysis indicates {energy_level} energy readiness and {focus_level} cognitive focus.")
+        ui_insights.append(f"⚡ **System State:** You have {energy_level} energy readiness and {focus_level} cognitive focus.")
+
+    if not insights:
+        return {
+            "clinical_insights": "Biometric data was received but lacked recognizable markers.",
+            "user_facing_insights": "Your scan was completed, but we couldn't extract clear markers today."
+        }
+
+    clinical_paragraph = "QUALITATIVE TELEMETRY SUMMARY: " + " ".join(insights) + " Do not invent or estimate any numerical values."
     
+    # 🚀 NEW: Join with double line breaks so it formats beautifully in React Native Text components
+    ui_paragraph = "\n\n".join(ui_insights)
+    
+    print(f"  -> Generated Context: {clinical_paragraph}")
+    
+    return {
+        "clinical_insights": clinical_paragraph,
+        "user_facing_insights": ui_paragraph # Return the aesthetic version to the graph state
+    }
+
+async def supervisor_node(state: AgentState):
+    print(f"\n🧠 [NODE 3: HEAVY SUPERVISOR ORCHESTRATOR]")
+    if state.get("routing_decision") == "safe_escalate": return {} 
+        
+    llm = ChatGroq(model=SUPERVISOR_MODEL, temperature=0).with_structured_output(SupervisorDecision)
+    
+    # 🚀 THE FIX: Explicitly tell the Supervisor to route personal data requests to 'general'
+    prompt = f"""You are the Cardia Supervisor. Route the following query to the correct specialist.
+    - 'clinical' -> interpreting heart rate, stress, symptoms, medical conditions requiring internet research.
+    - 'diet' -> food, recipes, macros, analyzing AR food scans requiring internet research.
+    - 'lifestyle' -> exercise, sleep hygiene, general wellness requiring internet research.
+    - 'general' -> questions about the user's OWN profile (e.g., "what are my allergies?", "what is my goal?"), past chat history, simple greetings, or casual chat.
+    
+    User Query: {state['anonymized_text']}
+    Real-Time Biometrics Context: {state.get('clinical_insights', 'None')}"""
+    
+    decision = await llm.ainvoke([HumanMessage(content=prompt)])
+    
+    # 🚀 THE FAILSAFE: Force the search_query to be completely empty for general routing. 
+    # This guarantees the Walled Garden API calls in downstream nodes are skipped.
+    search_query = "" if decision.route == "general" else decision.search_query
+    
+    print(f"  -> Routed to: [{decision.route.upper()}] with query: '{search_query}'")
+    
+    return {"routing_decision": decision.route, "research_query": search_query}
+
+async def clinical_specialist_node(state: AgentState):
+    print(f"\n👨‍⚕️ [NODE 4A: ASYNC CLINICAL (PUBMED & CACHE)]")
+    query = state["research_query"]
+    
+    cached_data = await get_cached_search(query) 
+    if cached_data:
+        final_research = cached_data
+        print(f"  -> 🟢 CACHE HIT (PUBMED) FOR '{query}'")
+    else:
+        try:
+            print(f"  -> 🔴 CACHE MISS. Fetching fresh data from PubMed for '{query}'...")
+            async with httpx.AsyncClient(timeout=15.0) as client:
+                search_url = "https://eutils.ncbi.nlm.nih.gov/entrez/eutils/esearch.fcgi"
+                search_res = await client.get(search_url, params={"db": "pubmed", "term": query, "retmode": "json", "retmax": 3})
+                pmids = search_res.json().get("esearchresult", {}).get("idlist", [])
+                
+                if pmids:
+                    fetch_url = "https://eutils.ncbi.nlm.nih.gov/entrez/eutils/efetch.fcgi"
+                    fetch_res = await client.get(fetch_url, params={"db": "pubmed", "id": ",".join(pmids), "retmode": "text", "rettype": "abstract"})
+                    final_research = fetch_res.text[:2000] 
+                    await save_to_cache(query, final_research, "pubmed")
+                else:
+                    final_research = "No clinical studies found."
+        except Exception as e:
+            print(f"  -> HTTPX Error: {e}")
+            final_research = "Clinical database temporarily unavailable."
+
+    llm = ChatGroq(model=TEXT_MODEL, temperature=0.2)
+    
+    # 🚀 UPDATED: Strict Invisible Tone & Profile Rules
+    prompt = f"""You are Cardia's Clinical AI Specialist. 
+    User Biometric State: {state.get('clinical_insights', 'None')}
+    User Medical Profile: {state.get('user_profile', 'None')}
+    
+    CRITICAL RULE 1 (INVISIBLE CONTEXT): Use the Biometric State ONLY to adjust your conversational empathy. DO NOT explicitly mention terms like "vagal tone", "Baevsky index", "readiness", or "energy" unless the user explicitly asks about their data. Speak like a normal, caring human.
+    CRITICAL RULE 2 (SAFETY): You MUST check the User Medical Profile. If they ask for advice that conflicts with their profile, warn them immediately.
+    
+    Medical Evidence: {final_research}
+    
+    Draft a warm, empathetic response without using formal citations."""
+    
+    res = await llm.ainvoke([SystemMessage(content=prompt), HumanMessage(content=state['anonymized_text'])])
+    return {"draft_response": res.content, "research_results": final_research}
+
+async def diet_lifestyle_specialist_node(state: AgentState):
+    route = state["routing_decision"]
+    print(f"\n🥗 [NODE 4B: ASYNC {route.upper()} (WALLED GARDEN & CACHE)]")
+    
+    query = state.get("research_query", "healthy habits")
     has_image = bool(state.get("image_data"))
     
+    try:
+        cached_result = await get_cached_search(query)
+        if cached_result:
+            print(f"  -> 🟢 CACHE HIT (TAVILY) FOR '{query}'")
+            research_data = cached_result
+        else:
+            print(f"  -> 🔴 CACHE MISS. Fetching fresh data from Tavily for '{query}'...")
+            search_output = await tavily_tool.ainvoke({"query": query})
+            
+            # 🚀 THE FIX: Bulletproof parsing that handles strings, lists, or dicts safely
+            if isinstance(search_output, str):
+                research_data = search_output
+            elif isinstance(search_output, list):
+                research_data = "\n".join([f"Source: {item.get('content', str(item))}" if isinstance(item, dict) else str(item) for item in search_output])
+            elif isinstance(search_output, dict) and "results" in search_output:
+                research_data = "\n".join([f"Source: {item.get('content', str(item))}" for item in search_output["results"]])
+            else:
+                research_data = str(search_output)
+                
+            await save_to_cache(query, research_data, "tavily")
+            
+    except Exception as e:
+        print(f"   -> Walled Garden Error: {e}")
+        research_data = "Verified search unavailable."
+
+    # 🚀 UPDATED: Strict Invisible Tone & ALLERGY Rules
+    base_prompt_rules = f"""User Biometric State: {state.get('clinical_insights', 'None')}
+    User Medical Profile & Allergies: {state.get('user_profile', 'None')}
+    
+    CRITICAL DIETARY RULE: You MUST cross-reference all food requests against the User Medical Profile. If they ask for something they are allergic to or avoid (like eggs, nuts, etc.), immediately flag the conflict and suggest safe alternatives!
+    CRITICAL TONE RULE (INVISIBLE CONTEXT): Use the Biometric State to adjust your mood, but DO NOT robotically recite their "vagal tone", "stress index", or "energy readiness" back to them. Sound like a natural human dietitian."""
+
     if has_image:
-        print(f"   -> 📸 Image detected. Routing to Vision Model ({VISION_MODEL}).")
+        print(f"  -> 📸 Image detected. Using Advanced Vision Prompting.")
         llm = ChatGroq(model=VISION_MODEL, temperature=0)
-    else:
-        llm = ChatGroq(model=TEXT_MODEL, temperature=0) 
-    
-    has_research = state.get("needs_research") and "**Total Found:** 0" not in state.get("research_results", "")
-    
-    heuristics = f"""
-    BACKGROUND LATENT KNOWLEDGE:
-    {state.get('clinical_insights', 'None')}
-    
-    CRITICAL TONE DIRECTIVE:
-    You are Cardia, a warm, empathetic health companion. 
-    1. DO NOT explicitly list the user's demographic or profile data back to them.
-    2. Speak naturally, conversationally, and warmly. Focus on answering their actual prompt.
-    """
-    
-    if has_research:
-        context = f"""
-        Base any medical claims strictly on this research:
-        {state['research_results']}
+        system_prompt = f"""You are Cardia's Vision-Dietitian. 
+        {base_prompt_rules}
         
-        CRITICAL RULES FOR RESPONSE:
-        1. DO NOT include bracketed citations (e.g., [1], [2]).
-        2. DO NOT include a "Sources", "References", or "PMID" section at the end.
-        """
-    else:
-        context = "No PubMed data found. DO NOT invent facts or citations. Suggest consulting a professional."
-
-    correction = f"\nCRITICAL FEEDBACK FROM EVALUATOR - FIX THIS: {state['evaluation_feedback']}" if state.get("evaluation_feedback") else ""
-
-    system_prompt = f"{heuristics}\n\n{context} {correction}"
-    
-    if has_image:
-        text_content = state['anonymized_text'] if state['anonymized_text'].strip() else "Please analyze this image."
+        CRITICAL TASK: explicitly identify the exact contents of the image. Then, estimate nutritional impact based on their profile."""
+        
         human_msg = HumanMessage(content=[
-            {"type": "text", "text": text_content},
+            {"type": "text", "text": state['anonymized_text']},
             {"type": "image_url", "image_url": {"url": f"data:image/jpeg;base64,{state['image_data']}"}}
         ])
     else:
+        llm = ChatGroq(model=TEXT_MODEL, temperature=0.2)
+        system_prompt = f"""You are Cardia's {route.capitalize()} Specialist.
+        {base_prompt_rules}
+        
+        Base your advice seamlessly on this research: {research_data}"""
         human_msg = HumanMessage(content=state['anonymized_text'])
+    
+    res = await llm.ainvoke([SystemMessage(content=system_prompt), human_msg])
+    return {"draft_response": res.content, "research_results": research_data}
 
-    res = llm.invoke([SystemMessage(content=system_prompt), human_msg])
-    
-    return {"draft_response": res.content}
+async def safe_escalate_node(state: AgentState):
+    print(f"\n🚨 [NODE 4C: CRISIS ESCALATION]")
+    msg = "I'm detecting that you might be experiencing a medical or emotional crisis. Cardia is an AI and cannot provide emergency care. Please immediately contact emergency services or visit the nearest hospital."
+    return {"draft_response": msg, "is_accurate": True} 
 
-def evaluate_response_node(state: AgentState):
-    print(f"\n🔬 [NODE 5: CRITIC REVIEW]")
-    llm = ChatGroq(model=TEXT_MODEL, temperature=0)
-    structured_llm = llm.with_structured_output(EvaluatorDecision)
+async def general_chat_node(state: AgentState):
+    print(f"\n💬 [NODE 4D: ASYNC GENERAL CHAT (BYPASS)]")
+    llm = ChatGroq(model=TEXT_MODEL, temperature=0.5)
     
-    prompt = f"Verify response against research. Ensure no hallucinations. \nDraft: {state['draft_response']} \nResearch: {state.get('research_results', 'None')}"
+    # 🚀 UPDATED: Ensuring normal conversation doesn't sound robotic
+    system_prompt = f"""You are Cardia, a friendly AI health assistant.
+    User Biometric State: {state.get('clinical_insights', 'None')}
+    User Medical Profile: {state.get('user_profile', 'None')}
     
-    evaluation = structured_llm.invoke([HumanMessage(content=prompt)])
-    if not evaluation.is_accurate: print(f"   -> 🛑 Reject: {evaluation.feedback}")
+    CRITICAL TONE RULE: Respond naturally and concisely. DO NOT quote their biometrics (like "vagal tone" or "stress") back to them. Just use the data internally to be more empathetic. Do not give medical advice."""
+    
+    res = await llm.ainvoke([SystemMessage(content=system_prompt), HumanMessage(content=state['anonymized_text'])])
+    return {"draft_response": res.content, "is_accurate": True}
+
+async def evaluate_response_node(state: AgentState):
+    print(f"\n🔬 [NODE 5: ASYNC CRITIC REVIEW]")
+    if state.get("routing_decision") == "safe_escalate": return {} 
+        
+    llm = ChatGroq(model=TEXT_MODEL, temperature=0).with_structured_output(EvaluatorDecision)
+    
+    # 🚀 UPDATED: Critic now enforces the allergy check and the tone rules.
+    prompt = f"""You are the Cardia Medical Critic. Verify this draft against the research and the user's profile. 
+    User Medical Profile: {state.get('user_profile', 'None')}
+    
+    CRITICAL RULE 1: Ensure the draft DOES NOT recommend a food or habit that conflicts with the User Medical Profile (e.g., if they avoid eggs, the draft cannot recommend pancakes without addressing the eggs).
+    CRITICAL RULE 2: Ensure the tone is natural and does not robotically repeat terms like "vagal tone", "Baevsky Stress Index", or "energy readiness" unless it's a direct answer to a data question. 
+    CRITICAL RULE 3: Do NOT flag biometric hardware terms as hallucinations.
+    
+    Draft: {state['draft_response']} 
+    Research: {state.get('research_results', 'None')}"""
+    
+    evaluation = await llm.ainvoke([HumanMessage(content=prompt)])
+    if not evaluation.is_accurate: 
+        print(f"  -> 🛑 Reject: {evaluation.feedback}")
         
     return {"is_accurate": evaluation.is_accurate, "evaluation_feedback": evaluation.feedback, "retry_count": state.get("retry_count", 0) + 1}
 
-def deanonymize_node(state: AgentState):
-    print(f"\n🔄 [NODE 6: DEANONYMIZE]")
+async def deanonymize_node(state: AgentState):
+    print(f"\n🔄 [NODE 6: DEANONYMIZE & FINALIZE]")
     final_output = state["draft_response"]
-    for placeholder, original in state["pii_mapping"].items():
+    for placeholder, original in state.get("pii_mapping", {}).items():
         final_output = final_output.replace(placeholder, original)
-            
-    print(f"   -> Output Ready.\n{'='*70}\n")
     return {"response": final_output}
 
 # --- GRAPH ORCHESTRATION ---
+def route_specialist(state: AgentState): return state["routing_decision"]
+def route_evaluator(state: AgentState):
+    if state["is_accurate"] or state.get("retry_count", 0) >= 2: return "deanonymize"
+    return state["routing_decision"] 
+
 workflow = StateGraph(AgentState)
 
+workflow.add_node("safety_gate", safety_gate_node)
 workflow.add_node("clinical_heuristics", clinical_heuristics_node)
-workflow.add_node("scrub_pii", scrub_pii_node)
-workflow.add_node("reason_and_route", reason_and_route_node)
-workflow.add_node("check_vector_cache", check_vector_cache_node) 
-workflow.add_node("pubmed_research", pubmed_research_node)
-workflow.add_node("rephrase_query", rephrase_query_node)
-workflow.add_node("generate_response", generate_response_node)
+workflow.add_node("supervisor", supervisor_node)
+workflow.add_node("clinical", clinical_specialist_node)
+workflow.add_node("diet", diet_lifestyle_specialist_node)
+workflow.add_node("lifestyle", diet_lifestyle_specialist_node)
+workflow.add_node("safe_escalate", safe_escalate_node)
+workflow.add_node("general", general_chat_node) 
 workflow.add_node("evaluate_response", evaluate_response_node)
 workflow.add_node("deanonymize", deanonymize_node)
 
-workflow.add_edge(START, "clinical_heuristics")
-workflow.add_edge("clinical_heuristics", "scrub_pii")
-workflow.add_edge("scrub_pii", "reason_and_route")
+workflow.add_edge(START, "safety_gate")
+workflow.add_edge("safety_gate", "clinical_heuristics")
+workflow.add_edge("clinical_heuristics", "supervisor")
 
-workflow.add_conditional_edges("reason_and_route", lambda x: "check_vector_cache" if x["needs_research"] else "generate_response")
-workflow.add_conditional_edges("check_vector_cache", lambda x: "generate_response" if x.get("research_results") else "pubmed_research")
-workflow.add_conditional_edges("pubmed_research", lambda x: "rephrase_query" if "**Total Found:** 0" in x["research_results"] and x["search_retry_count"] < 2 else "generate_response")
-workflow.add_edge("rephrase_query", "pubmed_research")
-workflow.add_edge("generate_response", "evaluate_response")
-workflow.add_conditional_edges("evaluate_response", lambda x: "deanonymize" if x["is_accurate"] or x["retry_count"] >= 2 else "generate_response")
+workflow.add_conditional_edges("supervisor", route_specialist)
+
+workflow.add_edge("clinical", "evaluate_response")
+workflow.add_edge("diet", "evaluate_response")
+workflow.add_edge("lifestyle", "evaluate_response")
+workflow.add_edge("safe_escalate", "deanonymize") 
+workflow.add_edge("general", "deanonymize") 
+
+workflow.add_conditional_edges("evaluate_response", route_evaluator)
 workflow.add_edge("deanonymize", END)
 
-app_graph = workflow.compile()
+# --- POSTGRES GRAPH COMPILATION ---
+DB_URI = os.getenv("DATABASE_URL", "postgresql://postgres:password@localhost:5432/postgres")
+
+pool = None
+_app_graph = None
+
+async def get_compiled_graph():
+    global _app_graph, pool
+    
+    if pool is None:
+        pool = AsyncConnectionPool(
+            conninfo=DB_URI,
+            max_size=20,
+            kwargs={"autocommit": True},
+            open=False 
+        )
+        await pool.open() 
+        
+    if _app_graph is None:
+        memory = AsyncPostgresSaver(pool)
+        await memory.setup()
+        _app_graph = workflow.compile(checkpointer=memory)
+        
+    return _app_graph

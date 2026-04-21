@@ -6,9 +6,8 @@ import DateTimePicker from '@react-native-community/datetimepicker';
 import { useFonts, Ubuntu_400Regular, Ubuntu_500Medium } from '@expo-google-fonts/ubuntu';
 import { SourceSerifPro_700Bold } from '@expo-google-fonts/source-serif-pro';
 
-const IP_ADDRESS = "192.168.1.3"
+const IP_ADDRESS = "https://purposely-ozone-enjoying.ngrok-free.dev"
 
-// --- Reusable Pill Component for Multi/Single Select ---
 const Pill = ({ label, isSelected, onPress }: { label: string, isSelected: boolean, onPress: () => void }) => (
   <TouchableOpacity 
     style={[styles.pill, isSelected && styles.pillSelected]} 
@@ -19,7 +18,6 @@ const Pill = ({ label, isSelected, onPress }: { label: string, isSelected: boole
   </TouchableOpacity>
 );
 
-// 🚀 NEW: Standard Email Regex Validator
 const isValidEmail = (email: string) => {
   const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
   return emailRegex.test(email);
@@ -28,7 +26,6 @@ const isValidEmail = (email: string) => {
 export default function AuthScreen() {
   const router = useRouter();
   
-  // Load Fonts
   let [fontsLoaded] = useFonts({
     Ubuntu_400Regular,
     Ubuntu_500Medium,
@@ -37,16 +34,11 @@ export default function AuthScreen() {
 
   const [isLoading, setIsLoading] = useState(false);
   
-  // Wizard State
   const [isLoginFlow, setIsLoginFlow] = useState(true);
   const [step, setStep] = useState(1);
-
-  // Form Data
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
   const [name, setName] = useState('');
-  
-  // DOB State Management
   const [dob, setDob] = useState(new Date());
   const [showDatePicker, setShowDatePicker] = useState(false);
   const [dobSet, setDobSet] = useState(false); 
@@ -55,24 +47,41 @@ export default function AuthScreen() {
   const [height, setHeight] = useState('');
   const [weight, setWeight] = useState('');
   const [diet, setDiet] = useState('Standard');
+  
   const [conditions, setConditions] = useState<string[]>([]);
   const [allergies, setAllergies] = useState<string[]>([]);
   const [extraInfo, setExtraInfo] = useState('');
-  const [goal, setGoal] = useState('Maintain Health');
+  
+  // 🚀 NEW: Changed to array to support multiple goals
+  const [goals, setGoals] = useState<string[]>(['Maintain Health']);
   const [customGoal, setCustomGoal] = useState('');
   
-  // Options
   const GENDER_OPTIONS = ['Male', 'Female', 'Other'];
-  const DIET_OPTIONS = ['Standard', 'Vegetarian', 'Vegan', 'Keto', 'Paleo', 'Low Sodium'];
-  const CONDITION_OPTIONS = ['Hypertension', 'Diabetes (Type 1)', 'Diabetes (Type 2)', 'Asthma', 'Anxiety', 'Heart Disease', 'None'];
-  const ALLERGY_OPTIONS = ['Peanuts', 'Tree Nuts', 'Dairy', 'Eggs', 'Shellfish', 'Soy', 'Gluten', 'None'];
-  const GOAL_OPTIONS = ['Weight Loss', 'Muscle Gain', 'Maintain Health', 'Increase Energy', 'Reduce Stress', 'Custom'];
+  
+  // 🚀 NEW: Expanded Options
+  const DIET_OPTIONS = ['Standard', 'Vegetarian', 'Vegan', 'Keto', 'Paleo', 'Mediterranean', 'Pescetarian', 'DASH', 'Low Sodium'];
+  const CONDITION_OPTIONS = ['Hypertension', 'High Cholesterol', 'Diabetes (Type 1)', 'Diabetes (Type 2)', 'Asthma', 'Anxiety', 'Heart Disease', 'PCOS', 'IBS', 'Celiac Disease', 'None'];
+  const ALLERGY_OPTIONS = ['Peanuts', 'Tree Nuts', 'Dairy', 'Eggs', 'Shellfish', 'Fish', 'Soy', 'Gluten', 'Wheat', 'Sesame', 'None'];
+  const GOAL_OPTIONS = ['Weight Loss', 'Muscle Gain', 'Maintain Health', 'Increase Energy', 'Reduce Stress', 'Improve Sleep', 'Custom'];
   
   const toggleArrayItem = (item: string, array: string[], setArray: (val: string[]) => void) => {
     if (item === 'None') { setArray(['None']); return; }
     let newArr = array.filter(i => i !== 'None');
     if (newArr.includes(item)) setArray(newArr.filter(i => i !== item));
     else setArray([...newArr, item]);
+  };
+
+  // 🚀 NEW: Logic to restrict goal selection to a maximum of 3
+  const toggleGoal = (selectedGoal: string) => {
+      if (goals.includes(selectedGoal)) {
+          setGoals(goals.filter(g => g !== selectedGoal));
+      } else {
+          if (goals.length >= 3) {
+              Alert.alert("Limit Reached", "You can select a maximum of 3 health goals.");
+              return;
+          }
+          setGoals([...goals, selectedGoal]);
+      }
   };
 
   const onDateChange = (event: any, selectedDate?: Date) => {
@@ -85,13 +94,11 @@ export default function AuthScreen() {
 
   const executeLogin = async () => {
     if (!email || !password) return Alert.alert("Error", "Enter email and password.");
-    
-    // 🚀 NEW: Validate email format before sending
     if (!isValidEmail(email)) return Alert.alert("Invalid Email", "Please enter a valid email address.");
 
     setIsLoading(true);
     try {
-      const response = await fetch(`http://${IP_ADDRESS}:8000/api/auth/login`, {
+      const response = await fetch(`${IP_ADDRESS}/api/auth/login`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
         body: `username=${encodeURIComponent(email.trim())}&password=${encodeURIComponent(password)}`
@@ -105,7 +112,6 @@ export default function AuthScreen() {
     finally { setIsLoading(false); }
   };
 
-  // Helper to validate step 1 of signup before proceeding to step 2
   const proceedToStep2 = () => {
     if (!name || !email || !password) return Alert.alert("Missing Info", "Please fill out your Name, Email, and Password.");
     if (!isValidEmail(email)) return Alert.alert("Invalid Email", "Please enter a valid email address.");
@@ -114,17 +120,24 @@ export default function AuthScreen() {
   };
 
   const executeSignup = async () => {
+    if (goals.length === 0) return Alert.alert("Missing Info", "Please select at least one health goal.");
+
     setIsLoading(true);
     const formattedDob = dob.toISOString().split('T')[0];
-    const finalGoal = goal === 'Custom' ? customGoal : goal; 
+    
+    // 🚀 Compile selected goals into a single string for the backend payload
+    const finalGoalsString = goals
+      .map(g => g === 'Custom' ? customGoal.trim() : g)
+      .filter(g => g !== '')
+      .join(', ');
 
     try {
-      const response = await fetch(`http://${IP_ADDRESS}:8000/api/auth/signup`, {
+      const response = await fetch(`${IP_ADDRESS}/api/auth/signup`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           email: email.trim(), password, full_name: name.trim(), dob: formattedDob, gender, height, weight,
-          goal: finalGoal, diet, chronic_conditions: conditions, allergies, additional_info: extraInfo
+          goal: finalGoalsString, diet, chronic_conditions: conditions, allergies, additional_info: extraInfo
         })
       });
       const data = await response.json();
@@ -212,11 +225,12 @@ export default function AuthScreen() {
       <Text style={styles.stepTitle}>Health & Dietary Profile</Text>
       <Text style={styles.stepSubtitle}>Help us personalize your advice</Text>
       
-      <Text style={styles.sectionLabel}>Primary Health Goal</Text>
+      {/* 🚀 NEW: Updated label to reflect the multi-select capability */}
+      <Text style={styles.sectionLabel}>Primary Health Goals (Select up to 3)</Text>
       <View style={styles.pillContainer}>
-        {GOAL_OPTIONS.map(g => <Pill key={g} label={g} isSelected={goal === g} onPress={() => setGoal(g)} />)}
+        {GOAL_OPTIONS.map(g => <Pill key={g} label={g} isSelected={goals.includes(g)} onPress={() => toggleGoal(g)} />)}
       </View>
-      {goal === 'Custom' && (
+      {goals.includes('Custom') && (
         <TextInput 
           style={[styles.input, {marginTop: 5, borderColor: '#D84361'}]} 
           placeholder="Type your specific goal..." 

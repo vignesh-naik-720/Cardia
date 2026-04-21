@@ -7,6 +7,8 @@ import { useEffect, useState } from 'react';
 import { View, ActivityIndicator } from 'react-native';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 
+import { DownloadProvider } from '../context/DownloadContext';
+
 export const unstable_settings = {
   anchor: '(tabs)',
 };
@@ -24,10 +26,10 @@ export default function RootLayout() {
         const inAuthGroup = (segments[0] as string) === 'auth';
 
         if (!token && !inAuthGroup) {
-          // No token found? Kick to login
+         
           router.replace({ pathname: '/auth' } as any);
         } else if (token && inAuthGroup) {
-          // Token exists but trying to view login? Push to main app
+          
           router.replace('/(tabs)');
         }
       } catch (error) {
@@ -49,13 +51,16 @@ export default function RootLayout() {
   }
 
   return (
-    <ThemeProvider value={colorScheme === 'dark' ? DarkTheme : DefaultTheme}>
-      <Stack>
-        <Stack.Screen name="auth" options={{ headerShown: false }} />
-        <Stack.Screen name="(tabs)" options={{ headerShown: false }} />
-        <Stack.Screen name="modal" options={{ presentation: 'modal', title: 'Modal' }} />
-      </Stack>
-      <StatusBar style="auto" />
-    </ThemeProvider>
+    <DownloadProvider>
+      <ThemeProvider value={colorScheme === 'dark' ? DarkTheme : DefaultTheme}>
+        {/* 🚀 ADD screenOptions HERE: This forces all top headers off globally */}
+        <Stack screenOptions={{ headerShown: false }}>
+          <Stack.Screen name="auth" />
+          <Stack.Screen name="(tabs)" />
+          <Stack.Screen name="modal" options={{ presentation: 'modal' }} />
+        </Stack>
+        <StatusBar style="auto" />
+      </ThemeProvider>
+    </DownloadProvider>
   );
 }

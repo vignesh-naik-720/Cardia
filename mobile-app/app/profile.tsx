@@ -7,7 +7,7 @@ import { Ionicons } from '@expo/vector-icons';
 import { useFonts, Ubuntu_400Regular, Ubuntu_500Medium } from '@expo-google-fonts/ubuntu';
 import { SourceSerifPro_700Bold } from '@expo-google-fonts/source-serif-pro';
 
-const IP_ADDRESS = "192.168.1.3";
+const IP_ADDRESS = "https://purposely-ozone-enjoying.ngrok-free.dev";
 
 const Pill = ({ label, isSelected, onPress, disabled }: { label: string, isSelected: boolean, onPress: () => void, disabled: boolean }) => (
   <TouchableOpacity 
@@ -37,29 +37,40 @@ export default function ProfileScreen() {
   const [customGoal, setCustomGoal] = useState('');
 
   const GENDER_OPTIONS = ['Male', 'Female', 'Other'];
-  const DIET_OPTIONS = ['Standard', 'Vegetarian', 'Vegan', 'Keto', 'Paleo', 'Low Sodium'];
-  const CONDITION_OPTIONS = ['Hypertension', 'Diabetes (Type 1)', 'Diabetes (Type 2)', 'Asthma', 'Anxiety', 'Heart Disease', 'None'];
-  const ALLERGY_OPTIONS = ['Peanuts', 'Tree Nuts', 'Dairy', 'Eggs', 'Shellfish', 'Soy', 'Gluten', 'None'];
-  const GOAL_OPTIONS = ['Weight Loss', 'Muscle Gain', 'Maintain Health', 'Increase Energy', 'Reduce Stress', 'Custom'];
+  
+  // 🚀 Expanded Options to match AuthScreen
+  const DIET_OPTIONS = ['Standard', 'Vegetarian', 'Vegan', 'Keto', 'Paleo', 'Mediterranean', 'Pescetarian', 'DASH', 'Low Sodium'];
+  const CONDITION_OPTIONS = ['Hypertension', 'High Cholesterol', 'Diabetes (Type 1)', 'Diabetes (Type 2)', 'Asthma', 'Anxiety', 'Heart Disease', 'PCOS', 'IBS', 'Celiac Disease', 'None'];
+  const ALLERGY_OPTIONS = ['Peanuts', 'Tree Nuts', 'Dairy', 'Eggs', 'Shellfish', 'Fish', 'Soy', 'Gluten', 'Wheat', 'Sesame', 'None'];
+  const GOAL_OPTIONS = ['Weight Loss', 'Muscle Gain', 'Maintain Health', 'Increase Energy', 'Reduce Stress', 'Improve Sleep', 'Custom'];
 
   useEffect(() => { loadProfile(); }, []);
 
   const loadProfile = async () => {
     const token = await AsyncStorage.getItem('userToken');
     try {
-      const res = await fetch(`http://${IP_ADDRESS}:8000/api/auth/profile`, { headers: { 'Authorization': `Bearer ${token}` } });
+      const res = await fetch(`${IP_ADDRESS}/api/auth/profile`, { headers: { 'Authorization': `Bearer ${token}` } });
       const data = await res.json();
       if (!data.chronic_conditions) data.chronic_conditions = [];
       if (!data.allergies) data.allergies = [];
       
-      // Detect if the saved goal is a custom string
-      let currentGoal = data.goal || 'Maintain Health';
-      if (!GOAL_OPTIONS.includes(currentGoal) && currentGoal !== 'Custom') {
-          setCustomGoal(currentGoal);
-          data.activeGoalPill = 'Custom'; // UI tracker for the pill menu
-      } else {
-          data.activeGoalPill = currentGoal;
-      }
+      // 🚀 Parse the backend goal string into an array of up to 3 goals
+      let rawGoal = data.goal || 'Maintain Health';
+      let parsedGoals = rawGoal.split(',').map((g: string) => g.trim());
+      let activePills: string[] = [];
+      let foundCustom = '';
+
+      parsedGoals.forEach((g: string) => {
+          if (GOAL_OPTIONS.includes(g) && g !== 'Custom') {
+              activePills.push(g);
+          } else if (g) {
+              activePills.push('Custom');
+              foundCustom = g;
+          }
+      });
+      
+      setCustomGoal(foundCustom);
+      data.activeGoalPills = activePills; // UI tracker for multiple pills
       
       setProfile(data);
     } catch (e) { Alert.alert("Error", "Could not load profile."); }
@@ -67,27 +78,50 @@ export default function ProfileScreen() {
   };
 
   const handleUpdate = async () => {
+    if (profile.activeGoalPills.length === 0) return Alert.alert("Missing Info", "Please select at least one health goal.");
+
     setSaving(true);
     const token = await AsyncStorage.getItem('userToken');
     
-    // Swap the pill tracker back to the actual string before sending
     const payload = { ...profile };
-    payload.goal = payload.activeGoalPill === 'Custom' ? customGoal : payload.activeGoalPill;
-    delete payload.activeGoalPill; // Clean up UI tracker
+    
+    // 🚀 Compile multiple goals into a single comma-separated string
+    const finalGoalsString = (payload.activeGoalPills || [])
+      .map((g: string) => g === 'Custom' ? customGoal.trim() : g)
+      .filter((g: string) => g !== '')
+      .join(', ');
+
+    payload.goal = finalGoalsString;
+    delete payload.activeGoalPills; // Clean up UI tracker
 
     try {
-      const res = await fetch(`http://${IP_ADDRESS}:8000/api/auth/profile`, {
+      const res = await fetch(`${IP_ADDRESS}/api/auth/profile`, {
         method: 'PUT',
         headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${token}` },
         body: JSON.stringify(payload)
       });
       if (res.ok) {
           Alert.alert("Success", "Profile Updated Successfully!");
-          setProfile({...profile, goal: payload.goal, activeGoalPill: payload.activeGoalPill === 'Custom' ? 'Custom' : payload.goal}); // Update local state securely
+          setProfile({...profile, goal: payload.goal}); 
           setIsEditing(false); 
       }
     } catch (e) { Alert.alert("Error", "Failed to save profile."); }
     finally { setSaving(false); }
+  };
+
+  // 🚀 Logic to restrict goal selection to a maximum of 3
+  const toggleGoal = (selectedGoal: string) => {
+      if (!isEditing) return;
+      let currentGoals = profile.activeGoalPills || [];
+      if (currentGoals.includes(selectedGoal)) {
+          setProfile({ ...profile, activeGoalPills: currentGoals.filter((g: string) => g !== selectedGoal) });
+      } else {
+          if (currentGoals.length >= 3) {
+              Alert.alert("Limit Reached", "You can select a maximum of 3 health goals.");
+              return;
+          }
+          setProfile({ ...profile, activeGoalPills: [...currentGoals, selectedGoal] });
+      }
   };
 
   const toggleArrayItem = (item: string, arrayKey: 'chronic_conditions' | 'allergies') => {
@@ -110,7 +144,6 @@ export default function ProfileScreen() {
 
   if (!fontsLoaded || loading || !profile) return <ActivityIndicator style={{flex: 1, backgroundColor: '#FFF5F5'}} size="large" color="#D84361" />;
 
-  // Clean Read-Only Field Component
   const ReadOnlyField = ({ label, value }: { label: string, value: string | string[] }) => {
       const displayValue = Array.isArray(value) ? value.join(', ') : value;
       return (
@@ -173,20 +206,20 @@ export default function ProfileScreen() {
               </View>
             </View>
 
-            {/* 🚀 NEW: Primary Health Goal UI */}
-            <Text style={styles.label}>Primary Health Goal</Text>
+            {/* 🚀 NEW: Multi-Select Health Goals UI */}
+            <Text style={styles.label}>Primary Health Goals (Select up to 3)</Text>
             <View style={styles.pillContainer}>
               {GOAL_OPTIONS.map(g => (
                 <Pill 
                   key={g} 
                   label={g} 
                   disabled={false}
-                  isSelected={profile.activeGoalPill === g} 
-                  onPress={() => setProfile({...profile, activeGoalPill: g})} 
+                  isSelected={(profile.activeGoalPills || []).includes(g)} 
+                  onPress={() => toggleGoal(g)} 
                 />
               ))}
             </View>
-            {profile.activeGoalPill === 'Custom' && (
+            {(profile.activeGoalPills || []).includes('Custom') && (
               <TextInput 
                  style={[styles.input, {marginTop: 5, borderColor: '#D84361'}]} 
                  value={customGoal} 
@@ -230,8 +263,7 @@ export default function ProfileScreen() {
                 <View style={{flex: 0.48}}><ReadOnlyField label="Weight" value={profile.weight ? `${profile.weight} kg` : 'N/A'} /></View>
             </View>
             
-            {/* 🚀 NEW: Read-Only Goal UI */}
-            <ReadOnlyField label="Primary Health Goal" value={profile.goal || 'Not set'} />
+            <ReadOnlyField label="Primary Health Goals" value={profile.goal || 'Not set'} />
 
             <ReadOnlyField label="Dietary Routine" value={profile.diet} />
             <ReadOnlyField label="Chronic Conditions" value={profile.chronic_conditions?.length ? profile.chronic_conditions : 'None'} />

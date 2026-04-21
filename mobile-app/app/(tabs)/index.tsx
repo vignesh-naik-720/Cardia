@@ -1,5 +1,5 @@
 import React, { useState, useRef, useEffect } from 'react';
-import { StyleSheet, Text, View, ActivityIndicator, ScrollView, TouchableOpacity, TextInput, Modal, KeyboardAvoidingView, Platform, Image, Animated, StatusBar, Dimensions } from 'react-native';
+import { StyleSheet, Text, View, ActivityIndicator, ScrollView, TouchableOpacity, TextInput, Modal, KeyboardAvoidingView, Platform, Image, Animated, StatusBar, Dimensions, Alert } from 'react-native';
 import { Camera, useCameraDevice, useCameraPermission } from 'react-native-vision-camera';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import { useRouter } from 'expo-router';
@@ -23,9 +23,8 @@ const FUN_FACTS = [
 ];
 
 const screenWidth = Dimensions.get("window").width;
-const IP_ADDRESS = "192.168.1.3";
+const IP_ADDRESS = "https://purposely-ozone-enjoying.ngrok-free.dev";
 
-// 🚀 NEW: Helper function to parse **bold** Markdown into React Native styles
 const formatMessageText = (text: string) => {
     if (!text) return null;
     const parts = text.split(/(\*\*.*?\*\*)/g);
@@ -96,6 +95,7 @@ export default function App() {
   const [isAnytimeMode, setIsAnytimeMode] = useState(false);
 
   const [selectedImage, setSelectedImage] = useState<{ uri: string, base64: string } | null>(null);
+  const [showAttachMenu, setShowAttachMenu] = useState(false);
 
   const [timeframe, setTimeframe] = useState<'7_days' | 'month'>('7_days');
   const [selectedMetric, setSelectedMetric] = useState<'Energy' | 'Stress' | 'Focus' | 'Health'>('Energy');
@@ -115,7 +115,7 @@ export default function App() {
       try {
         const token = await AsyncStorage.getItem('userToken');
         if (token) {
-          const response = await fetch(`http://${IP_ADDRESS}:8000/api/auth/profile`, { headers: { 'Authorization': `Bearer ${token}` } });
+          const response = await fetch(`${IP_ADDRESS}/api/auth/profile`, { headers: { 'Authorization': `Bearer ${token}` } });
           const data = await response.json();
           if (data.full_name) setUserName(data.full_name.split(' ')[0]);
         }
@@ -130,7 +130,7 @@ export default function App() {
       try {
         const token = await AsyncStorage.getItem('userToken');
         if (token) {
-          const response = await fetch(`http://${IP_ADDRESS}:8000/api/trends?timeframe=${timeframe}&metric=${selectedMetric.toLowerCase()}`, {
+          const response = await fetch(`${IP_ADDRESS}/api/trends?timeframe=${timeframe}&metric=${selectedMetric.toLowerCase()}`, {
             headers: { 'Authorization': `Bearer ${token}` }
           });
           const data = await response.json();
@@ -236,7 +236,7 @@ export default function App() {
     
     try {
       const token = await AsyncStorage.getItem('userToken');
-      const response = await fetch(`http://${IP_ADDRESS}:8000/api/scan`, {
+      const response = await fetch(`${IP_ADDRESS}/api/scan`, {
         method: 'POST', body: formData, headers: { 'Authorization': `Bearer ${token}` },
       });
       const data = await response.json();
@@ -247,7 +247,9 @@ export default function App() {
           const checkStatus = async () => {
               if (!isPolling) return;
               try {
-                  const statusRes = await fetch(`http://${IP_ADDRESS}:8000/api/scan/status/${data.task_id}`);
+                  const statusRes = await fetch(`${IP_ADDRESS}/api/scan/status/${data.task_id}`, {
+                      headers: { 'Authorization': `Bearer ${token}` }
+                  });
                   if (!statusRes.ok) {
                       isPolling = false;
                       setScanError("Server error.");
@@ -289,7 +291,7 @@ export default function App() {
   const triggerInitialAgentMessage = async (metrics: any) => {
       try {
           const token = await AsyncStorage.getItem('userToken');
-          const response = await fetch(`http://${IP_ADDRESS}:8000/api/chat`, {
+          const response = await fetch(`${IP_ADDRESS}/api/chat`, {
               method: 'POST', headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${token}` },
               body: JSON.stringify({ 
                   biometrics: metrics || {}, 
@@ -327,9 +329,29 @@ export default function App() {
       ]);
   };
 
-  const pickImage = async () => {
+  const pickFromGallery = async () => {
       let result = await ImagePicker.launchImageLibraryAsync({
-          mediaTypes: ImagePicker.MediaTypeOptions.Images,
+          mediaTypes: ['images'],
+          allowsEditing: true,
+          quality: 0.5,
+          base64: true 
+      });
+
+      if (!result.canceled && result.assets[0].base64) {
+          setSelectedImage({ uri: result.assets[0].uri, base64: result.assets[0].base64 });
+      }
+  };
+
+  const takePhoto = async () => {
+      const permissionResult = await ImagePicker.requestCameraPermissionsAsync();
+      
+      if (permissionResult.granted === false) {
+          Alert.alert("Permission Required", "Cardia needs camera access to take photos.");
+          return;
+      }
+
+      let result = await ImagePicker.launchCameraAsync({
+          mediaTypes: ['images'],
           allowsEditing: true,
           quality: 0.5,
           base64: true 
@@ -367,7 +389,7 @@ export default function App() {
 
       try {
           const token = await AsyncStorage.getItem('userToken');
-          const response = await fetch(`http://${IP_ADDRESS}:8000/api/chat`, {
+          const response = await fetch(`${IP_ADDRESS}/api/chat`, {
               method: 'POST', headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${token}` },
               body: JSON.stringify({ 
                   biometrics: biometrics || {}, 
@@ -461,6 +483,23 @@ export default function App() {
               </TouchableOpacity>
           </Modal>
 
+          <Modal visible={showAttachMenu} transparent animationType="fade">
+              <TouchableOpacity style={styles.modalOverlayCenter} activeOpacity={1} onPress={() => setShowAttachMenu(false)}>
+                  <View style={styles.metricModalCenter}>
+                      <Text style={styles.metricModalTitle}>Attach Image</Text>
+                      <TouchableOpacity style={styles.menuItem} onPress={() => { setShowAttachMenu(false); takePhoto(); }}>
+                          <Ionicons name="camera-outline" size={22} color="#D84361" />
+                          <Text style={[styles.menuText, {color: '#5C4E50'}]}>Take Photo</Text>
+                      </TouchableOpacity>
+                      <View style={styles.menuDivider} />
+                      <TouchableOpacity style={styles.menuItem} onPress={() => { setShowAttachMenu(false); pickFromGallery(); }}>
+                          <Ionicons name="images-outline" size={22} color="#D84361" />
+                          <Text style={[styles.menuText, {color: '#5C4E50'}]}>Choose from Gallery</Text>
+                      </TouchableOpacity>
+                  </View>
+              </TouchableOpacity>
+          </Modal>
+
           {currentScreen === 'home' && (
               <ScrollView contentContainerStyle={{alignItems: 'center', width: '100%', paddingBottom: 60}} showsVerticalScrollIndicator={false}>
                   <View style={styles.headerBar}>
@@ -496,7 +535,6 @@ export default function App() {
                                   <Ionicons name="finger-print-outline" size={45} color="#D84361" />
                               </View>
                               <Text style={styles.hugeScanText}>Take Daily Scan</Text>
-                              <Text style={styles.scanSubText}>Analyze HRV & Stress</Text>
                           </View>
                       </TouchableOpacity>
                   </Animated.View>
@@ -640,7 +678,7 @@ export default function App() {
           )}
 
           {currentScreen === 'melio_chat' && (
-              <MelioChat onClose={() => setCurrentScreen('home')} />
+              <MelioChat onClose={() => setCurrentScreen('home')} biometrics={biometrics} />
           )}
 
           {currentScreen === 'cloud_chat' && (
@@ -653,7 +691,7 @@ export default function App() {
                       <TouchableOpacity onPress={handleBackToHome} style={styles.backButton}>
                           <Ionicons name="arrow-back" size={28} color="#D84361" />
                       </TouchableOpacity>
-                      <Text style={styles.headerTitle}>{isAnytimeMode ? "Cardia" : "Cardia Analysis"}</Text>
+                      <Text style={styles.headerTitle}>{isAnytimeMode ? "Cardia" : "Cardia"}</Text>
                       <View style={{width: 28}} />
                   </View>
                   
@@ -707,7 +745,7 @@ export default function App() {
                   )}
 
                   <View style={styles.inputArea}>
-                      <TouchableOpacity style={styles.attachButton} onPress={pickImage}>
+                      <TouchableOpacity style={styles.attachButton} onPress={() => setShowAttachMenu(true)}>
                           <Ionicons name="add" size={28} color="#A09395" />
                       </TouchableOpacity>
 

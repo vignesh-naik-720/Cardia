@@ -1,53 +1,55 @@
-from sqlalchemy import Column, Integer, String, DateTime, Date, Float, ForeignKey
-from sqlalchemy.dialects.postgresql import JSONB
-from sqlalchemy.sql import func
+from sqlalchemy import Column, Integer, String, Float, DateTime, Date, ForeignKey, JSON
 from sqlalchemy.orm import relationship
+from datetime import datetime
 from database import Base
 
 class User(Base):
     __tablename__ = "users"
 
     id = Column(Integer, primary_key=True, index=True)
-    email = Column(String, unique=True, index=True, nullable=False)
-    hashed_password = Column(String, nullable=False)
+    email = Column(String, unique=True, index=True)
+    hashed_password = Column(String)
     full_name = Column(String)
-    
-    # Clinical Baseline Fields
-    dob = Column(String, nullable=True)
-    gender = Column(String, nullable=True)
-    height = Column(String, nullable=True)
-    weight = Column(String, nullable=True)
-    goal = Column(String, nullable=True) # 🚀 NEW: Added Goal Column
-    diet = Column(String, nullable=True)
-    chronic_conditions = Column(JSONB, default=[])
-    allergies = Column(JSONB, default=[])
-    additional_info = Column(String, nullable=True)
-    
-    created_at = Column(DateTime(timezone=True), server_default=func.now())
+    dob = Column(String)
+    gender = Column(String)
+    height = Column(String)
+    weight = Column(String)
+    goal = Column(String)
+    diet = Column(String)
+    chronic_conditions = Column(JSON)
+    allergies = Column(JSON)
+    additional_info = Column(String)
 
-    scans = relationship("DailyScan", back_populates="owner", cascade="all, delete-orphan")
-
-# --- NEW: Daily Scan Table for Calendar & Trends ---
 class DailyScan(Base):
     __tablename__ = "daily_scans"
 
     id = Column(Integer, primary_key=True, index=True)
-    user_id = Column(Integer, ForeignKey("users.id"), index=True)
-    scan_date = Column(Date, index=True, default=func.current_date())
-    
-    # Raw Metrics
+    user_id = Column(Integer, ForeignKey("users.id"))
+    scan_date = Column(Date)
     hr_bpm = Column(Float)
-    
-    # The 4 Meta-Heuristics from your rppg_core.py
     stress_score = Column(Integer)
     energy_score = Column(Integer)
     health_score = Column(Integer)
     focus_score = Column(Integer)
-    
-    # The exact clinical string extracted from LangGraph
-    heuristics_text = Column(String)   
-    
-    created_at = Column(DateTime(timezone=True), server_default=func.now())
+    heuristics_text = Column(String)
 
-    # Relationship back to User
-    owner = relationship("User", back_populates="scans")
+class HealthEvent(Base):
+    __tablename__ = "health_events"
+
+    id = Column(Integer, primary_key=True, index=True)
+    user_id = Column(Integer, ForeignKey("users.id"))
+    event_type = Column(String, index=True) 
+    timestamp = Column(DateTime, default=datetime.utcnow)
+    payload = Column(JSON)
+    
+    user = relationship("User")
+
+# Add to models.py
+class SearchCache(Base):
+    __tablename__ = "search_cache"
+
+    id = Column(Integer, primary_key=True, index=True)
+    query = Column(String, unique=True, index=True) # The exact search term
+    result_text = Column(String) # The PubMed or Tavily payload
+    source = Column(String) # 'pubmed' or 'tavily'
+    last_accessed = Column(DateTime, default=datetime.utcnow) # For LRU sorting

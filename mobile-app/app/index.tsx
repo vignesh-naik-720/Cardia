@@ -18,14 +18,12 @@ export default function SplashScreen() {
   useEffect(() => {
     if (!fontsLoaded) return;
 
-    // Fade in animation
     Animated.timing(fadeAnim, {
       toValue: 1,
       duration: 1000,
       useNativeDriver: true,
     }).start();
 
-    // Check auth and route after 2 seconds
     const checkAuth = async () => {
       const token = await AsyncStorage.getItem('userToken');
       setTimeout(() => {
@@ -34,7 +32,7 @@ export default function SplashScreen() {
         } else {
           router.replace('/auth');
         }
-      }, 2500); // 2.5 seconds total screen time
+      }, 2500); 
     };
 
     checkAuth();
@@ -60,7 +58,7 @@ export default function SplashScreen() {
 const styles = StyleSheet.create({
   container: {
     flex: 1,
-    backgroundColor: '#FFF5F5', // Pastel Pink/Red Background
+    backgroundColor: '#FFF5F5', 
     justifyContent: 'center',
     alignItems: 'center',
   },
@@ -75,12 +73,12 @@ const styles = StyleSheet.create({
   title: {
     fontFamily: 'SourceSerifPro_700Bold',
     fontSize: 48,
-    color: '#D84361', // Deeper pastel red
+    color: '#D84361',
     marginBottom: 10,
   },
   subtitle: {
     fontFamily: 'Ubuntu_400Regular',
     fontSize: 18,
-    color: '#8A6D72', // Dusty rose/brown for readable contrast
+    color: '#8A6D72', 
   },
 });

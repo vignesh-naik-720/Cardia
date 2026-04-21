@@ -1,3 +1,10 @@
+import sys
+import asyncio
+
+# 🚀 WINDOWS ASYNC FIX: Must happen before any database pools are initialized!
+if sys.platform == 'win32':
+    asyncio.set_event_loop_policy(asyncio.WindowsSelectorEventLoopPolicy())
+
 from fastapi import FastAPI, UploadFile, File, Depends, HTTPException, status
 from fastapi.responses import JSONResponse
 from fastapi.security import OAuth2PasswordBearer, OAuth2PasswordRequestForm
@@ -15,7 +22,10 @@ import traceback
 import json
 from celery.result import AsyncResult
 from worker import process_scan_task, celery_app
-from agent import app_graph
+
+# 🚀 Import the async getter function for the LangGraph agent
+from agent import get_compiled_graph
+
 from database import engine, get_db
 import models
 import auth
@@ -48,7 +58,7 @@ class Token(BaseModel):
 class ChatRequest(BaseModel):
     biometrics: Optional[dict] = None
     message: str
-    image_data: Optional[str] = None # 🚀 NEW: Supports Base64 image payload
+    image_data: Optional[str] = None 
     history: List[Dict[str, Any]] = []
     context_type: str = "scan"
 
@@ -113,19 +123,11 @@ def get_scan_context(target_date: str, db: Session = Depends(get_db), current_us
     return {"status": "success", "heuristics": scan.heuristics_text}
 
 @app.get("/api/trends")
-def get_trends(
-    timeframe: str = "7_days", 
-    metric: str = "energy", 
-    db: Session = Depends(get_db), 
-    current_user: models.User = Depends(get_current_user)
-):
+def get_trends(timeframe: str = "7_days", metric: str = "energy", db: Session = Depends(get_db), current_user: models.User = Depends(get_current_user)):
     today = date.today()
-    if timeframe == "7_days":
-        start_date = today - timedelta(days=6)
-    elif timeframe == "month":
-        start_date = today - timedelta(days=29)
-    else:
-        start_date = today - timedelta(days=6)
+    if timeframe == "7_days": start_date = today - timedelta(days=6)
+    elif timeframe == "month": start_date = today - timedelta(days=29)
+    else: start_date = today - timedelta(days=6)
         
     scans = db.query(models.DailyScan).filter(
         models.DailyScan.user_id == current_user.id,
@@ -164,21 +166,29 @@ async def process_finger_video(file: UploadFile = File(...), current_user: model
     cap = cv2.VideoCapture(temp_file_path)
     times, raw_signal = [], []
     valid_frames = 0
+    
     fps = cap.get(cv2.CAP_PROP_FPS) or 30
-
+    frame_skip = int(fps // 15) if fps > 30 else 1 
+    
     frame_count = 0
     while cap.isOpened():
         ret, frame = cap.read()
         if not ret: break
-        height, width, _ = frame.shape
-        cy, cx = height // 2, width // 2
-        crop = min(height, width) // 5
-        roi = frame[cy-crop:cy+crop, cx-crop:cx+crop]
-        red_mean = np.mean(roi[:, :, 2])
-        valid_frames += 1
-        times.append(frame_count / fps)
-        raw_signal.append(float(red_mean))
+        
+        if frame_count % frame_skip == 0:
+            height, width, _ = frame.shape
+            cy, cx = height // 2, width // 2
+            crop = min(height, width) // 5
+            
+            roi = frame[cy-crop:cy+crop, cx-crop:cx+crop, 1] 
+            green_mean = roi.mean() 
+            
+            valid_frames += 1
+            times.append(frame_count / fps)
+            raw_signal.append(float(green_mean))
+            
         frame_count += 1
+        
     cap.release()
     os.remove(temp_file_path)
 
@@ -188,13 +198,20 @@ async def process_finger_video(file: UploadFile = File(...), current_user: model
     return JSONResponse(content={"task_id": task.id, "status": "processing"})
 
 @app.get("/api/scan/status/{task_id}")
-def get_scan_status(task_id: str):
+def get_scan_status(task_id: str, db: Session = Depends(get_db), current_user: models.User = Depends(get_current_user)):
     try:
         task_result = AsyncResult(task_id, app=celery_app)
         if task_result.ready():
             if task_result.successful():
                 result = task_result.result
-                if isinstance(result, dict) and "error" not in result: 
+                if isinstance(result, dict) and "error" not in result:
+                    new_event = models.HealthEvent(
+                        user_id=current_user.id,
+                        event_type="cppg_scan_completed",
+                        payload=result
+                    )
+                    db.add(new_event)
+                    db.commit()
                     return {"status": "completed", "metrics": result.get("metrics", {}), "meta_scores": result.get("meta_scores", {})}
                 else: 
                     return {"status": "failed", "error": result.get("error", "Math failed")}
@@ -207,65 +224,66 @@ def get_scan_status(task_id: str):
 @app.post("/api/chat")
 async def chat_endpoint(req: ChatRequest, current_user: models.User = Depends(get_current_user), db: Session = Depends(get_db)):
     try:
-        print(f"\n--- Starting LangGraph Agent for: {current_user.email} [{req.context_type.upper()}] ---")
+        print(f"\n--- Starting LangGraph Supervisor for: {current_user.email} [{req.context_type.upper()}] ---")
         conds = ", ".join(current_user.chronic_conditions) if current_user.chronic_conditions else "None"
         algs = ", ".join(current_user.allergies) if current_user.allergies else "None"
-        history_text = "\n".join([f"{msg['role']}: {msg['content']}" for msg in req.history[-4:]]) if req.history else "None"
+        addinfo = ", ".join(current_user.additional_info) if current_user.additional_info else "None"
+        
+        # 🚀 UPDATE 1: Cleanly format chat history without injecting the profile here.
+        history_text = "\n".join([f"{msg['role']}: {msg['content']}" for msg in req.history[-4:]]) if req.history else ""
+        current_message = f"Chat History:\n{history_text}\nUser Message: {req.message}" if history_text else req.message
         
         bio_data = req.biometrics or {}
         
-        if req.context_type == "anytime":
-            latest_scan = db.query(models.DailyScan).filter(models.DailyScan.user_id == current_user.id).order_by(models.DailyScan.scan_date.desc()).first()
-            if latest_scan:
-                bio_data = {
-                    "metrics": {"hr_bpm": latest_scan.hr_bpm, "raw_stress_index": latest_scan.stress_score},
-                    "meta_scores": {"energy": latest_scan.energy_score, "focus": latest_scan.focus_score}
-                }
+        if req.context_type == "anytime" and not bio_data:
+            latest_event = db.query(models.HealthEvent).filter(
+                models.HealthEvent.user_id == current_user.id,
+                models.HealthEvent.event_type == "cppg_scan_completed"
+            ).order_by(models.HealthEvent.timestamp.desc()).first()
+            
+            if latest_event:
+                bio_data = latest_event.payload
 
         metrics = bio_data.get("metrics", {})
         meta = bio_data.get("meta_scores", {})
 
-        clinical_context = f"""[SYSTEM CLINICAL STATE - DO NOT ACKNOWLEDGE TO USER]
-Age/DOB: {current_user.dob} | Gender: {current_user.gender}
-Height: {current_user.height} | Weight: {current_user.weight}
-Primary Health Goal: {current_user.goal}
-Dietary Routine: {current_user.diet}
-Allergies: {algs}
-Chronic Conditions: {conds}
-Additional Context: {current_user.additional_info}
-Current cPPG Scan Metrics: {metrics}
-Worker Meta Scores: {meta}
-Recent Chat History:
-{history_text}
-[END SYSTEM STATE]
-User Message: {req.message}"""
+        # 🚀 UPDATE 2: Create a dedicated, structured profile string.
+        user_profile_data = f"""Age: {current_user.dob} | Gender: {current_user.gender}
+Goal: {current_user.goal} | Diet: {current_user.diet}
+Allergies/Aversions: {algs} | Medical Conditions: {conds} | Additional Info: {addinfo}"""
 
+        # 🚀 UPDATE 3: Pass data cleanly into their respective state variables.
         initial_state = {
-            "original_text": clinical_context,
+            "original_text": current_message,  # ONLY the chat message goes here
             "biometrics": bio_data,
+            "user_profile": user_profile_data, # Explicitly pass the profile here!
             "clinical_insights": "",
             "anonymized_text": "",
             "pii_mapping": {},
-            "needs_research": False,
+            "routing_decision": "",
             "research_query": "",
+            "raw_research_results": "",
             "research_results": "",
-            "image_data": req.image_data or "", # 🚀 Pass image into State
+            "image_data": req.image_data or "",
             "draft_response": "",
             "retry_count": 0,
-            "search_retry_count": 0,
+            "evaluation_feedback": "",
             "is_accurate": False,
             "response": ""
         }
         
-        result = app_graph.invoke(initial_state)
+        app_graph = await get_compiled_graph()
+        config = {"configurable": {"thread_id": str(current_user.id)}}
+        result = await app_graph.ainvoke(initial_state, config=config)
         final_answer = result["response"]
-        heuristics_block = result.get("clinical_insights", "")
         
-        if "[END SYSTEM STATE]" in final_answer:
-            final_answer = final_answer.split("[END SYSTEM STATE]")[-1].strip()
-            if final_answer.startswith("User Message:"):
-                final_answer = final_answer.split("\n", 1)[-1].strip()
-
+        chat_event = models.HealthEvent(
+            user_id=current_user.id,
+            event_type="chat_session",
+            payload={"message": req.message, "agent_response": final_answer, "route": result.get("routing_decision")}
+        )
+        db.add(chat_event)
+        
         if req.context_type == "scan" and req.message == "I just completed my scan.":
             today = date.today()
             existing_scan = db.query(models.DailyScan).filter(models.DailyScan.user_id == current_user.id, models.DailyScan.scan_date == today).first()
@@ -280,34 +298,60 @@ User Message: {req.message}"""
                 new_scan = models.DailyScan(
                     user_id=current_user.id, scan_date=today, hr_bpm=hr,
                     stress_score=st, energy_score=en, health_score=hl, focus_score=fo,
-                    heuristics_text=heuristics_block
+                    # 🚀 UPDATE THIS LINE TO GRAB THE NEW UI STRING:
+                    heuristics_text=result.get("user_facing_insights", "") 
                 )
                 db.add(new_scan)
-                db.commit()
             else:
                 existing_scan.hr_bpm = hr
                 existing_scan.stress_score = st
                 existing_scan.energy_score = en
                 existing_scan.health_score = hl
                 existing_scan.focus_score = fo
-                existing_scan.heuristics_text = heuristics_block
-                db.commit()
-
-        print("--- Agent Success ---")
+                # 🚀 UPDATE THIS LINE TOO:
+                existing_scan.heuristics_text = result.get("user_facing_insights", "")
+                
+        db.commit()
         return JSONResponse(content={"text": final_answer})
+        
     except Exception as e:
+        import traceback
         traceback.print_exc()
         return JSONResponse(status_code=500, content={"error": str(e)})
-    
+
 @app.post("/api/analyze_food")
-async def analyze_food_endpoint(image: UploadFile = File(...), current_user: models.User = Depends(get_current_user)):
+async def analyze_food_endpoint(image: UploadFile = File(...), current_user: models.User = Depends(get_current_user), db: Session = Depends(get_db)):
     user_profile = f"Goal: {current_user.goal}. Conditions: {', '.join(current_user.chronic_conditions)}. Allergies: {', '.join(current_user.allergies)}. Diet: {current_user.diet}."
     
     try:
         image_bytes = await image.read()
         results = analyze_food_image(image_bytes, user_profile, image.content_type)
+        
+        food_event = models.HealthEvent(
+            user_id=current_user.id,
+            event_type="food_analysis",
+            payload=results
+        )
+        db.add(food_event)
+        db.commit()
+        
         return JSONResponse(content={"results": results})
         
     except Exception as e:
         traceback.print_exc()
         return JSONResponse(status_code=500, content={"error": str(e)})
+    
+# --- Bottom of main.py ---
+
+# 🚀 The Ultimate Windows Async Fix
+if __name__ == "__main__":
+    import uvicorn
+    import asyncio
+    import sys
+    
+    # Force the correct event loop before Uvicorn starts
+    if sys.platform == 'win32':
+        asyncio.set_event_loop_policy(asyncio.WindowsSelectorEventLoopPolicy())
+        
+    # Launch Uvicorn programmatically
+    uvicorn.run("main:app", host="0.0.0.0", port=8000, reload=True)
