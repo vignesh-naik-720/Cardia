@@ -38,7 +38,7 @@ export default function ProfileScreen() {
 
   const GENDER_OPTIONS = ['Male', 'Female', 'Other'];
   
-  // 🚀 Expanded Options to match AuthScreen
+  // Expanded Options to match AuthScreen
   const DIET_OPTIONS = ['Standard', 'Vegetarian', 'Vegan', 'Keto', 'Paleo', 'Mediterranean', 'Pescetarian', 'DASH', 'Low Sodium'];
   const CONDITION_OPTIONS = ['Hypertension', 'High Cholesterol', 'Diabetes (Type 1)', 'Diabetes (Type 2)', 'Asthma', 'Anxiety', 'Heart Disease', 'PCOS', 'IBS', 'Celiac Disease', 'None'];
   const ALLERGY_OPTIONS = ['Peanuts', 'Tree Nuts', 'Dairy', 'Eggs', 'Shellfish', 'Fish', 'Soy', 'Gluten', 'Wheat', 'Sesame', 'None'];
@@ -85,7 +85,7 @@ export default function ProfileScreen() {
     
     const payload = { ...profile };
     
-    // 🚀 Compile multiple goals into a single comma-separated string
+    // Compile multiple goals into a single comma-separated string
     const finalGoalsString = (payload.activeGoalPills || [])
       .map((g: string) => g === 'Custom' ? customGoal.trim() : g)
       .filter((g: string) => g !== '')
@@ -109,7 +109,6 @@ export default function ProfileScreen() {
     finally { setSaving(false); }
   };
 
-  // 🚀 Logic to restrict goal selection to a maximum of 3
   const toggleGoal = (selectedGoal: string) => {
       if (!isEditing) return;
       let currentGoals = profile.activeGoalPills || [];
