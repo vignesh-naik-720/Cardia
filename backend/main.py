@@ -1,7 +1,6 @@
 import sys
 import asyncio
 
-# 🚀 WINDOWS ASYNC FIX: Must happen before any database pools are initialized!
 if sys.platform == 'win32':
     asyncio.set_event_loop_policy(asyncio.WindowsSelectorEventLoopPolicy())
 
@@ -22,10 +21,7 @@ import traceback
 import json
 from celery.result import AsyncResult
 from worker import process_scan_task, celery_app
-
-# 🚀 Import the async getter function for the LangGraph agent
 from agent import get_compiled_graph
-
 from database import engine, get_db
 import models
 import auth
@@ -229,7 +225,6 @@ async def chat_endpoint(req: ChatRequest, current_user: models.User = Depends(ge
         algs = ", ".join(current_user.allergies) if current_user.allergies else "None"
         addinfo = ", ".join(current_user.additional_info) if current_user.additional_info else "None"
         
-        # 🚀 UPDATE 1: Cleanly format chat history without injecting the profile here.
         history_text = "\n".join([f"{msg['role']}: {msg['content']}" for msg in req.history[-4:]]) if req.history else ""
         current_message = f"Chat History:\n{history_text}\nUser Message: {req.message}" if history_text else req.message
         
@@ -247,16 +242,14 @@ async def chat_endpoint(req: ChatRequest, current_user: models.User = Depends(ge
         metrics = bio_data.get("metrics", {})
         meta = bio_data.get("meta_scores", {})
 
-        # 🚀 UPDATE 2: Create a dedicated, structured profile string.
         user_profile_data = f"""Age: {current_user.dob} | Gender: {current_user.gender}
 Goal: {current_user.goal} | Diet: {current_user.diet}
 Allergies/Aversions: {algs} | Medical Conditions: {conds} | Additional Info: {addinfo}"""
 
-        # 🚀 UPDATE 3: Pass data cleanly into their respective state variables.
         initial_state = {
-            "original_text": current_message,  # ONLY the chat message goes here
+            "original_text": current_message,  
             "biometrics": bio_data,
-            "user_profile": user_profile_data, # Explicitly pass the profile here!
+            "user_profile": user_profile_data, 
             "clinical_insights": "",
             "anonymized_text": "",
             "pii_mapping": {},
@@ -298,7 +291,6 @@ Allergies/Aversions: {algs} | Medical Conditions: {conds} | Additional Info: {ad
                 new_scan = models.DailyScan(
                     user_id=current_user.id, scan_date=today, hr_bpm=hr,
                     stress_score=st, energy_score=en, health_score=hl, focus_score=fo,
-                    # 🚀 UPDATE THIS LINE TO GRAB THE NEW UI STRING:
                     heuristics_text=result.get("user_facing_insights", "") 
                 )
                 db.add(new_scan)
@@ -308,7 +300,6 @@ Allergies/Aversions: {algs} | Medical Conditions: {conds} | Additional Info: {ad
                 existing_scan.energy_score = en
                 existing_scan.health_score = hl
                 existing_scan.focus_score = fo
-                # 🚀 UPDATE THIS LINE TOO:
                 existing_scan.heuristics_text = result.get("user_facing_insights", "")
                 
         db.commit()
@@ -340,18 +331,13 @@ async def analyze_food_endpoint(image: UploadFile = File(...), current_user: mod
     except Exception as e:
         traceback.print_exc()
         return JSONResponse(status_code=500, content={"error": str(e)})
-    
 # --- Bottom of main.py ---
-
-# 🚀 The Ultimate Windows Async Fix
 if __name__ == "__main__":
     import uvicorn
     import asyncio
     import sys
     
-    # Force the correct event loop before Uvicorn starts
     if sys.platform == 'win32':
         asyncio.set_event_loop_policy(asyncio.WindowsSelectorEventLoopPolicy())
         
-    # Launch Uvicorn programmatically
     uvicorn.run("main:app", host="0.0.0.0", port=8000, reload=True)
