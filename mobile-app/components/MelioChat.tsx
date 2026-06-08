@@ -7,12 +7,10 @@ import {
 } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
 import { initLlama, LlamaContext } from 'llama.rn';
-import { File, Paths } from 'expo-file-system'; // 🚀 Back to the SDK 52 API
+import { File, Paths } from 'expo-file-system'; 
 import { useDownload, MODEL_FILENAME } from '../context/DownloadContext';
 
-// ─────────────────────────────────────────────
 // Types & Interfaces
-// ─────────────────────────────────────────────
 type MelioMessage = { role: 'user' | 'melio'; text: string };
 
 interface MelioChatProps { 
@@ -60,7 +58,7 @@ CORE RULES:
 3. MENTAL HEALTH SUPPORT: If the user expresses stress, anxiety, or sadness, pivot to a supportive CBT (Cognitive Behavioral Therapy) style. Offer ONE practical grounding technique (like 4-7-8 breathing) or a gentle reframing question.
 4. TONE: Speak warmly and concisely. Do not use generic filler like "I'm here for you."`;
 
-// 🚀 NEW: Markdown Text Formatter
+//  NEW: Markdown Text Formatter
 
 const formatMessageText = (text: string) => {
     if (!text) return null;
