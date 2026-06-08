@@ -5,10 +5,7 @@ import time
 from dotenv import load_dotenv
 from pydantic import BaseModel, Field
 
-# Load API Keys
 load_dotenv()
-
-# --- INITIALIZE BOTH CLIENTS ---
 
 # 1. Gemini (Primary)
 from google import genai
@@ -26,7 +23,6 @@ if not groq_api_key:
 groq_client = Groq(api_key=groq_api_key) if groq_api_key else None
 
 
-# --- PYDANTIC SCHEMAS (Shared by both models) ---
 class BoundingBox(BaseModel):
     ymin: int = Field(description="Top edge (0-1000)")
     xmin: int = Field(description="Left edge (0-1000)")
@@ -54,9 +50,7 @@ def analyze_food_image(image_bytes: bytes, user_profile: str, mime_type: str = "
     If Gemini throws a 503 or fails, instantly falls back to Groq (Llama-4-Vision).
     """
     
-    # ==========================================================
     # ATTEMPT 1: GEMINI 2.5 FLASH (PRIMARY)
-    # ==========================================================
     if gemini_client:
         print("🚀 [PRIMARY] Routing to Gemini 2.5 Flash...")
         try:
@@ -113,9 +107,8 @@ def analyze_food_image(image_bytes: bytes, user_profile: str, mime_type: str = "
             print("🔄 [FALLBACK] Instantly rerouting to Groq Llama-4-Vision...")
             # Do NOT return here. Let the code naturally drop down to the Groq fallback block.
     
-    # ==========================================================
+    
     # ATTEMPT 2: GROQ LLAMA VISION (FALLBACK)
-    # ==========================================================
     if groq_client:
         print("🚀 [FALLBACK] Encoding image and routing to Groq...")
         base64_image = base64.b64encode(image_bytes).decode('utf-8')
