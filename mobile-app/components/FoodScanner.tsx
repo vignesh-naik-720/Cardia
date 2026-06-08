@@ -24,7 +24,6 @@ interface FoodScannerProps {
     IP_ADDRESS: string;
 }
 
-// 🚀 The continuous ripple animation (separated from the touchable area)
 const ConcentricRing = ({ color, delay }: { color: string, delay: number }) => {
     const animationValue = useRef(new Animated.Value(0)).current;
 
@@ -277,14 +276,13 @@ export default function FoodScanner({ onClose, onOpenChat, device, IP_ADDRESS }:
     );
 }
 
-// 🚀 Exact dimensions of the marker
 const BLOB_DIAMETER = 44;
 const TRIANGLE_HEIGHT = 14;
 const TOTAL_ANCHOR_OFFSET_Y = BLOB_DIAMETER + TRIANGLE_HEIGHT; 
 const TOTAL_ANCHOR_OFFSET_X = BLOB_DIAMETER / 2; 
 
 const styles = StyleSheet.create({
-    // 🚀 CRITICAL FIX: Absolute positioning, zIndex, and elevation guarantee it floats above Android SurfaceView
+   
     featureHeader: { 
         position: 'absolute', 
         top: 0, 
@@ -298,7 +296,7 @@ const styles = StyleSheet.create({
         justifyContent: 'space-between', 
         paddingHorizontal: 20, 
         paddingVertical: 15,
-        paddingTop: Platform.OS === 'ios' ? 50 : 30, // Safe area padding since it floats
+        paddingTop: Platform.OS === 'ios' ? 50 : 30, 
     },
     backButton: { padding: 5 },
     headerTitle: { fontFamily: 'SourceSerifPro_700Bold', fontSize: 24 },
